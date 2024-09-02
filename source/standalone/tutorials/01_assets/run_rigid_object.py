@@ -40,6 +40,7 @@ import omni.isaac.core.utils.prims as prim_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 from omni.isaac.lab.assets import RigidObject, RigidObjectCfg
+# from omni.isaac.lab.sim.spawners import UsdFileCfg
 from omni.isaac.lab.sim import SimulationContext
 
 
@@ -72,6 +73,25 @@ def design_scene():
         init_state=RigidObjectCfg.InitialStateCfg(),
     )
     cone_object = RigidObject(cfg=cone_cfg)
+
+    usd = sim_utils.UsdFileCfg(
+        usd_path="C:repo/IsaacLab/robot/1115_urdf_v13.usdz",
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_body_enabled=True,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=100.0,
+            enable_gyroscopic_forces=True,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False,
+            solver_position_iteration_count=4,
+            solver_velocity_iteration_count=0,
+            sleep_threshold=0.005,
+            stabilization_threshold=0.001,
+        ),
+    )
+    cfg.func("/World/Objects/RRR", cfg, translation=(0.0, 0.0, 1.05))
 
     # return the scene information
     scene_entities = {"cone": cone_object}
