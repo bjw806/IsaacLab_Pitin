@@ -129,16 +129,16 @@ class AGVSceneCfg(InteractiveSceneCfg):
             #     stiffness=0.0,
             #     damping=0.0,
             # ),
-            # "pin_pri_actuator": ImplicitActuatorCfg(
-            #     joint_names_expr=[
-            #         # AGV_JOINT.LR_LPIN_PRI,
-            #         AGV_JOINT.RR_RPIN_PRI
-            #     ],
-            #     effort_limit=200.0,
-            #     velocity_limit=100.0,
-            #     stiffness=100.0,
-            #     damping=100.0,
-            # ),
+            "pin_pri_actuator": ImplicitActuatorCfg(
+                joint_names_expr=[
+                    # AGV_JOINT.LR_LPIN_PRI,
+                    AGV_JOINT.RR_RPIN_PRI
+                ],
+                effort_limit=200.0,
+                velocity_limit=100.0,
+                stiffness=100.0,
+                damping=100.0,
+            ),
         },
     )
     # AGV_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -262,14 +262,14 @@ class ActionsCfg:
     #     ],
     #     scale=100.0,
     # )
-    # joint_pin = mdp.JointEffortActionCfg(
-    #     asset_name="robot",
-    #     joint_names=[
-    #         # AGV_JOINT.LR_LPIN_PRI,
-    #         AGV_JOINT.RR_RPIN_PRI,
-    #     ],
-    #     scale=100.0,
-    # )
+    joint_pin = mdp.JointEffortActionCfg(
+        asset_name="robot",
+        joint_names=[
+            # AGV_JOINT.LR_LPIN_PRI,
+            AGV_JOINT.RR_RPIN_PRI,
+        ],
+        scale=100.0,
+    )
 
 
 def l_cam_rgb(env: ManagerBasedEnv):
@@ -461,7 +461,7 @@ def r_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     rew = torch.sub(init_distances_r, distances)
 
     if rew < 0:
-        rew *= 10
+        rew *= 100
 
     return rew
 
@@ -476,9 +476,9 @@ def l_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 def penalty_z(env) -> torch.Tensor:
     # l_hole_pos_w = hole_positions(env, False)
-    r_hole_pos_w = hole_positions(env, False)
+    r_hole_pos_w = hole_positions(env, True)
     # l_pin_pos_w = pin_positions(env, False)
-    r_pin_pos_w = pin_positions(env, False)
+    r_pin_pos_w = pin_positions(env, True)
 
     r_hole_x = r_hole_pos_w[:, 0]
     r_hole_y = r_hole_pos_w[:, 1]
@@ -488,16 +488,20 @@ def penalty_z(env) -> torch.Tensor:
     r_pin_y = r_pin_pos_w[:, 1]
     r_pin_z = r_pin_pos_w[:, 2]
 
-    z_condition = r_pin_z >= (r_hole_z - 0.03)
+    z_condition = r_pin_z >= r_hole_z
 
     xy_distance = torch.sqrt((r_pin_x - r_hole_x) ** 2 + (r_pin_y - r_hole_y) ** 2)
-    xy_condition = xy_distance <= 0.05
+    xy_condition = xy_distance >= 0.01
 
-    combined_condition = z_condition & xy_condition
+    if z_condition and xy_condition:
+        return True
+    else:
+        return False
 
-    penalty = torch.where(combined_condition, torch.tensor(xy_distance * 10, device='cuda:0'), torch.tensor(0.0, device='cuda:0'))
+    # combined_condition = z_condition & xy_condition
+    # penalty = torch.where(combined_condition, torch.tensor(xy_distance * 10, device='cuda:0'), torch.tensor(0.0, device='cuda:0'))
 
-    return penalty
+    # return penalty
 
 
 @configclass
@@ -505,9 +509,9 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # (1) Constant running reward
-    # alive = RewTerm(func=mdp.is_alive, weight=1.0)
+    alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # (2) Failure penalty
-    # terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
+    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
 
     r_pin = RewTerm(func=r_pin_reward, weight=1.0)
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
@@ -523,17 +527,17 @@ class RewardsCfg:
     #     },
     # )
     
-    # niro_undesired_contacts = RewTerm(
-    #     func=mdp.undesired_contacts,
-    #     weight=-5.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "niro_contact",
-    #             # body_names=".*THIGH"
-    #         ), 
-    #         "threshold": 1.0,
-    #     },
-    # )
+    niro_undesired_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "niro_contact",
+                # body_names=".*THIGH"
+            ), 
+            "threshold": 1.0,
+        },
+    )
 
     # (3) Primary task: keep pole upright
     # pole_pos = RewTerm(
@@ -542,10 +546,21 @@ class RewardsCfg:
     #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["jr"]), "target": 0.0},
     # )
     # (4) Shaping tasks: lower cart velocity
-    # cart_vel = RewTerm(
+    # pri_vel = RewTerm(
     #     func=mdp.joint_vel_l1,
-    #     weight=-0.01,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
+    #     weight=-0.1,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot", 
+    #             joint_names=[
+    #                 # AGV_JOINT.MB_PZ_PRI,
+    #                 AGV_JOINT.PZ_PY_PRI,
+    #                 AGV_JOINT.PY_PX_PRI,
+    #                 # AGV_JOINT.LR_LPIN_PRI,
+    #                 AGV_JOINT.RR_RPIN_PRI,
+    #             ]
+    #         )
+    #     },
     # )
     # (5) Shaping tasks: lower pole angular velocity
     # pole_vel = RewTerm(
@@ -612,7 +627,7 @@ class TerminationsCfg:
     # pole_out_of_bounds = DoneTerm(func=out_of_limit)
     # pole_contacts = DoneTerm(func=undesired_contacts)
 
-    # pin_in_hole = DoneTerm(func=termination_accel)
+    pin_in_hole = DoneTerm(func=penalty_z)
 
 
 @configclass
