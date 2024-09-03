@@ -437,7 +437,7 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[
-                    AGV_JOINT.LR_LPIN_PRI,
+                    # AGV_JOINT.LR_LPIN_PRI,
                     AGV_JOINT.RR_RPIN_PRI,
                 ]
             ),
@@ -510,10 +510,9 @@ def r_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     #     else:
     #         rew[i] = torch.exp(-distances[i])
     # rew = torch.exp(-distances)
-    init_distances_r = torch.ones_like(distances)  # Replace with actual init_distances_r tensor
-    rew = torch.sub(init_distances_r, distances)
-    negative_mask = rew < 0
-    rew = torch.where(negative_mask, rew * 100, rew)
+    rew = torch.sub(init_distances_r, distances) * 100
+    # negative_mask = rew < 0
+    # rew = torch.where(negative_mask, rew * 10, rew)
     
     return rew
 
