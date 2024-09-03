@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import math
+import numpy as np
 
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.assets import (
@@ -27,6 +28,7 @@ import omni.isaac.lab_tasks.manager_based.classic.cartpole.mdp as mdp
 from omni.isaac.lab.sensors import CameraCfg, Camera, ContactSensorCfg, ContactSensor
 from omni.isaac.lab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 import torch
+import omni.isaac.lab.utils.math as math_utils
 
 ##
 # Pre-defined configs
@@ -356,43 +358,93 @@ def initial_pin_position(env, env_ids) -> torch.Tensor:
     # print(f"rinit: {init_distances_r}")
 
 
+def randomize_joints_by_offset(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    position_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos = asset.data.default_joint_pos[env_ids].clone()
+    joint_pos += math_utils.sample_uniform(*position_range, joint_pos.shape, joint_pos.device)
+    joint_pos_limits = asset.data.soft_joint_pos_limits[env_ids]
+    joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+    asset.write_joint_state_to_sim(joint_pos, 0, env_ids=env_ids)
+
+
+def randomize_object_position(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    xy_position_range: tuple[float, float],
+    z_position_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    rigid_object = env.scene.rigid_objects[asset_cfg.name]
+    # obtain default and deal with the offset for env origins
+    default_root_state = rigid_object.data.default_root_state[env_ids].clone()
+    default_root_state[:, 0:3] += env.scene.env_origins[env_ids]
+
+    xy_low, xy_high = xy_position_range
+    z_low, z_high = z_position_range
+
+    # Random offsets for X and Y coordinates
+    xy_random_offsets = torch.tensor(
+        np.random.uniform(xy_low, xy_high, size=(default_root_state.shape[0], 2)),  # For X and Y only
+        dtype=default_root_state.dtype,
+        device=default_root_state.device
+    )
+    
+    # Random offsets for Z coordinate
+    z_random_offsets = torch.tensor(
+        np.random.uniform(z_low, z_high, size=(default_root_state.shape[0], 1)),  # For Z only
+        dtype=default_root_state.dtype,
+        device=default_root_state.device
+    )
+    
+    # Apply random offsets to the X, Y, and Z coordinates
+    default_root_state[:, 0:2] += xy_random_offsets  # Apply to X and Y coordinates
+    default_root_state[:, 2:3] += z_random_offsets   # Apply to Z coordinate
+
+    # set into the physics simulatio
+    rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
+
+
 @configclass
 class EventCfg:
     """Configuration for events."""
 
     # reset
-    # reset_xyz_position = EventTerm(
-    #     func=mdp.reset_joints_by_offset,
-    #     mode="reset",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             joint_names=[
-    #                 # AGV_JOINT.MB_PZ_PRI,
-    #                 AGV_JOINT.PZ_PY_PRI,
-    #                 AGV_JOINT.PY_PX_PRI,
-    #             ]
-    #         ),
-    #         "position_range": (-0.1, 0.1),
-    #         "velocity_range": (-0.5, 0.5),
-    #     },
-    # )
+    reset_xyz_position = EventTerm(
+        func=randomize_joints_by_offset,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    # AGV_JOINT.MB_PZ_PRI,
+                    AGV_JOINT.PZ_PY_PRI,
+                    AGV_JOINT.PY_PX_PRI,
+                ]
+            ),
+            "position_range": (-0.05, 0.05),
+        },
+    )
 
-    # reset_pins_position = EventTerm(
-    #     func=mdp.reset_joints_by_offset,
-    #     mode="reset",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             joint_names=[
-    #                 AGV_JOINT.LR_LPIN_PRI,
-    #                 AGV_JOINT.RR_RPIN_PRI,
-    #             ]
-    #         ),
-    #         "position_range": (0, 0),
-    #         "velocity_range": (-0.5, 0.5),
-    #     },
-    # )
+    reset_pin_position = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    AGV_JOINT.LR_LPIN_PRI,
+                    AGV_JOINT.RR_RPIN_PRI,
+                ]
+            ),
+            "position_range": (0, 0),
+            "velocity_range": (0, 0),
+        },
+    )
 
     # reset_rev_position = EventTerm(
     #     func=mdp.reset_joints_by_offset,
@@ -405,13 +457,13 @@ class EventCfg:
     # )
 
     reset_niro_position = EventTerm(
-        func=mdp.reset_scene_to_default,
+        func=randomize_object_position,
         mode="reset",
-        # params={
-        #     "asset_cfg": SceneEntityCfg("niro"),
-        #     "position_range": (-0.25, 0.25),
-        #     "velocity_range": (-0.25, 0.25),
-        # },
+        params={
+            "asset_cfg": SceneEntityCfg("niro"),
+            "xy_position_range": (-0.05, 0.05),
+            "z_position_range": (-0.03, 0.03)
+        },
     )
 
     init_position = EventTerm(
@@ -509,7 +561,7 @@ class RewardsCfg:
     # (1) Constant running reward
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
+    terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
     r_pin = RewTerm(func=r_pin_reward, weight=1.0)
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
