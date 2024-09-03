@@ -458,11 +458,11 @@ def r_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     #     else:
     #         rew[i] = torch.exp(-distances[i])
     # rew = torch.exp(-distances)
+    init_distances_r = torch.ones_like(distances)  # Replace with actual init_distances_r tensor
     rew = torch.sub(init_distances_r, distances)
-
-    if rew < 0:
-        rew *= 100
-
+    negative_mask = rew < 0
+    rew = torch.where(negative_mask, rew * 100, rew)
+    
     return rew
 
 
@@ -493,10 +493,8 @@ def penalty_z(env) -> torch.Tensor:
     xy_distance = torch.sqrt((r_pin_x - r_hole_x) ** 2 + (r_pin_y - r_hole_y) ** 2)
     xy_condition = xy_distance >= 0.01
 
-    if z_condition and xy_condition:
-        return True
-    else:
-        return False
+    result = torch.where(z_condition & xy_condition, torch.tensor(True), torch.tensor(False))
+    return result
 
     # combined_condition = z_condition & xy_condition
     # penalty = torch.where(combined_condition, torch.tensor(xy_distance * 10, device='cuda:0'), torch.tensor(0.0, device='cuda:0'))
