@@ -136,8 +136,8 @@ class AGVSceneCfg(InteractiveSceneCfg):
                     # AGV_JOINT.LR_LPIN_PRI,
                     AGV_JOINT.RR_RPIN_PRI
                 ],
-                effort_limit=200.0,
-                velocity_limit=100.0,
+                effort_limit=100.0,
+                velocity_limit=50.0,
                 stiffness=100.0,
                 damping=100.0,
             ),
@@ -355,6 +355,17 @@ def initial_pin_position(env, env_ids) -> torch.Tensor:
     global init_distances_r
     init_distances_r = torch.norm(distance_r, dim=1)
 
+    r_hole_z = r_hole_pos_w[:, 2]
+    r_pin_z = r_pin_pos_w[:, 2]
+    global init_z_distance_r
+    init_z_distance_r = torch.sub(r_hole_z, r_pin_z)
+
+    r_hole_xy = r_hole_pos_w[:, 0:1]
+    r_pin_xy = r_pin_pos_w[:, 0:1]
+
+    global init_xy_distance_r
+    init_xy_distance_r = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
+
     # print(f"rinit: {init_distances_r}")
 
 
@@ -493,6 +504,29 @@ def hole_positions(env: ManagerBasedRLEnv, right: bool = True):
     return hole_pos_w
 
 
+def r_pin_xy(env):
+    r_hole_pos_w = hole_positions(env, True)
+    r_pin_pos_w = pin_positions(env, True)
+
+    r_hole_xy = r_hole_pos_w[:, 0:1]
+    r_pin_xy = r_pin_pos_w[:, 0:1]
+
+    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
+    rew = torch.sub(init_xy_distance_r, xy_distance)
+    return rew * 100
+
+
+def r_pin_z(env):
+    r_hole_pos_w = hole_positions(env, True)
+    r_pin_pos_w = pin_positions(env, True)
+    r_hole_z = r_hole_pos_w[:, 2]
+    r_pin_z = r_pin_pos_w[:, 2]
+
+    z_dist = torch.sub(r_hole_z, r_pin_z)
+    rew = torch.sub(init_z_distance_r, z_dist)
+    return rew * 100
+
+
 def r_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
     r_hole_pos_w = hole_positions(env, True)
     r_pin_pos_w = pin_positions(env, True)
@@ -531,17 +565,15 @@ def penalty_z(env) -> torch.Tensor:
     # l_pin_pos_w = pin_positions(env, False)
     r_pin_pos_w = pin_positions(env, True)
 
-    r_hole_x = r_hole_pos_w[:, 0]
-    r_hole_y = r_hole_pos_w[:, 1]
+    r_hole_xy = r_hole_pos_w[:, 0:1]
+    r_pin_xy = r_pin_pos_w[:, 0:1]
+
     r_hole_z = r_hole_pos_w[:, 2]
-    
-    r_pin_x = r_pin_pos_w[:, 0]
-    r_pin_y = r_pin_pos_w[:, 1]
     r_pin_z = r_pin_pos_w[:, 2]
 
     z_condition = r_pin_z >= r_hole_z
 
-    xy_distance = torch.sqrt((r_pin_x - r_hole_x) ** 2 + (r_pin_y - r_hole_y) ** 2)
+    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
     xy_condition = xy_distance >= 0.01
 
     result = torch.where(z_condition & xy_condition, torch.tensor(True), torch.tensor(False))
@@ -562,9 +594,10 @@ class RewardsCfg:
     # (2) Failure penalty
     terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
-    r_pin = RewTerm(func=r_pin_reward, weight=1.0)
+    # r_pin = RewTerm(func=r_pin_reward, weight=1.0)
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
-    # r_pin_z = RewTerm(func=penalty_z, weight=-3)
+    r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
+    r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
 
     
     # agv_undesired_contacts = RewTerm(
