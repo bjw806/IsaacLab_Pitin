@@ -60,8 +60,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=512,
-        height=512,
+        width=256,
+        height=256,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -401,7 +401,7 @@ class AGVEnv(DirectRLEnv):
         pin_pos_w = self.pin_position(right)
         diff = torch.sub(pin_pos_w, hole_pos_w)
         dist = torch.norm(diff, dim=1)
-        rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist) * 100
+        rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist)
         return rew
 
     def initial_pin_position(self) -> torch.Tensor:
