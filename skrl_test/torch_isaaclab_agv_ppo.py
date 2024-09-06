@@ -38,7 +38,7 @@ class Policy(GaussianMixin, Model):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(50176, 512),  # 9216 / 230400
+            nn.Linear(9216, 512),  # 9216 / 230400
             nn.ReLU(),
             nn.Linear(512, 16),
             nn.Tanh(),
@@ -72,7 +72,7 @@ class Value(DeterministicMixin, Model):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(50176, 512),  # 9216 / 230400
+            nn.Linear(9216, 512),  # 9216 / 230400
             nn.ReLU(),
             nn.Linear(512, 16),
             nn.Tanh(),
@@ -97,7 +97,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=10000, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=20000, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -115,24 +115,28 @@ for model in models.values():
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 10000
-cfg["learning_epochs"] = 10
-cfg["mini_batches"] = 10
+cfg["rollouts"] = 20000
+cfg["learning_epochs"] = 100
+cfg["mini_batches"] = 100
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4
 cfg["value_learning_rate"] = 2.5e-4
-cfg["grad_norm_clip"] = 10
+# cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = False
 cfg["entropy_loss_scale"] = 0.0
 cfg["value_loss_scale"] = 0.5
 cfg["kl_threshold"] = 0
+# cfg["random_timesteps"] = 1000
+cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
+cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
+
 # logging to TensorBoard and write checkpoints (in timesteps)
-cfg["experiment"]["write_interval"] = 10000
-cfg["experiment"]["checkpoint_interval"] = 10000
-cfg["experiment"]["directory"] = "runs/torch/JetBotEnv"
+cfg["experiment"]["write_interval"] = 300
+cfg["experiment"]["checkpoint_interval"] = 100000
+cfg["experiment"]["directory"] = "runs/torch/AGV"
 
 agent = PPO(
     models=models,
@@ -145,7 +149,7 @@ agent = PPO(
 
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 500000}
+cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # start training

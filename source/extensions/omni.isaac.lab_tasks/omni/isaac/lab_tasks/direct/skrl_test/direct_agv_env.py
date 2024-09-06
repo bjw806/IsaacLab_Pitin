@@ -60,8 +60,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=256,
-        height=256,
+        width=128,
+        height=128,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -223,7 +223,9 @@ class AGVEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         # print(7)
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
-        observations = {"policy": self._rcam.data.output[data_type].clone()[:,:,:,:3]}#.view(-1)
+        tensor = self._rcam.data.output[data_type].clone()[:,:,:,:3]
+        #tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
+        observations = {"policy": tensor}#.view(-1)
 
         if self.cfg.write_image_to_file:
             # save_images_to_file(observations["policy"], f"agv_{data_type}.png")
@@ -242,7 +244,7 @@ class AGVEnv(DirectRLEnv):
         rew_termination = self.reset_terminated.float()
         rew_pin_r = self.pin_reward(True)
 
-        total_reward = rew_alive + rew_termination + rew_pin_r
+        total_reward = rew_alive*0.01 + rew_termination + rew_pin_r
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
