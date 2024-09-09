@@ -38,7 +38,7 @@ class Policy(GaussianMixin, Model):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(9216, 512),  # 9216 / 230400
+            nn.Linear(82944, 512),  # 9216 / 230400
             nn.ReLU(),
             nn.Linear(512, 16),
             nn.Tanh(),
@@ -71,7 +71,7 @@ class Value(DeterministicMixin, Model):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(9216, 512),  # 9216 / 230400
+            nn.Linear(82944, 512),  # 9216 / 230400
             nn.ReLU(),
             nn.Linear(512, 16),
             nn.Tanh(),
@@ -89,13 +89,14 @@ class Value(DeterministicMixin, Model):
 
 # load and wrap the environment
 env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
-env = wrap_env(env)
+env = wrap_env(env, wrapper="isaaclab-single-agent")
 
 device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=20000, num_envs=env.num_envs, device=device)
+rollouts = 2048
+memory = RandomMemory(memory_size=rollouts, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -113,9 +114,9 @@ for model in models.values():
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 20000
-cfg["learning_epochs"] = 100
-cfg["mini_batches"] = 100
+cfg["rollouts"] = rollouts
+cfg["learning_epochs"] = 10
+cfg["mini_batches"] = 10
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4

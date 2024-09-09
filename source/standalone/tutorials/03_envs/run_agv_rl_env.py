@@ -28,13 +28,14 @@ simulation_app = app_launcher.app
 
 import torch
 
-from omni.isaac.lab.envs import ManagerBasedRLEnv
+from omni.isaac.lab.envs import ManagerBasedRLEnv,DirectRLEnv
 
-from omni.isaac.lab_tasks.manager_based.classic.cartpole.agv_env_cfg import AGVEnvCfg, pin_positions, hole_positions
+# from omni.isaac.lab_tasks.manager_based.classic.cartpole.agv_env_cfg import AGVEnvCfg, pin_positions, hole_positions
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from omni.isaac.lab.utils.math import quat_from_angle_axis
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from omni.isaac.lab_tasks.direct.skrl_test.direct_agv_env import AGVEnvCfg, AGVEnv
 
 
 def define_markers() -> VisualizationMarkers:
@@ -55,10 +56,7 @@ def main():
     env_cfg = AGVEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
     # setup RL environment
-    env = ManagerBasedRLEnv(cfg=env_cfg)
-
-
-
+    env = AGVEnv(cfg=env_cfg)
     my_visualizer = define_markers()
 
 
@@ -73,12 +71,12 @@ def main():
                 print("-" * 80)
                 print("[INFO]: Resetting environment...")
             
-            marker_locations = torch.vstack((hole_positions(env, True), pin_positions(env, True)))
+            marker_locations = torch.vstack((env.hole_position(True), env.pin_position(True)))
             my_visualizer.visualize(marker_locations)
 
 
             # sample random actions
-            joint_efforts = torch.randn_like(env.action_manager.action)
+            joint_efforts = torch.randn_like(env.actions)
             # step the environment
             obs, rew, terminated, truncated, info = env.step(joint_efforts)
             # print current orientation of pole

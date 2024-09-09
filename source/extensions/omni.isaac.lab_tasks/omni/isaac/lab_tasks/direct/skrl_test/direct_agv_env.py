@@ -60,8 +60,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=128,
-        height=128,
+        width=320,
+        height=320,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -115,17 +115,17 @@ class AGVEnv(DirectRLEnv):
         # print(1)
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._MB_LW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_LW_REV)
-        self._MB_RW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_RW_REV)
-        self._MB_PZ_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_PZ_PRI)
-        self._PZ_PY_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PZ_PY_PRI)
-        self._PY_PX_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PY_PX_PRI)
-        self._PX_PR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PX_PR_REV)
-        self._PR_LR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_LR_REV)
-        self._PR_RR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_RR_REV)
-        self._LR_LPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.LR_LPIN_PRI)
+        # self._MB_LW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_LW_REV)
+        # self._MB_RW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_RW_REV)
+        # self._MB_PZ_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_PZ_PRI)
+        # self._PZ_PY_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PZ_PY_PRI)
+        # self._PY_PX_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PY_PX_PRI)
+        # self._PX_PR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PX_PR_REV)
+        # self._PR_LR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_LR_REV)
+        # self._PR_RR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_RR_REV)
+        # self._LR_LPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.LR_LPIN_PRI)
         self._RR_RPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.RR_RPIN_PRI)
-
+        self._XY_PRI_idx, _ = self._agv.find_joints([self.cfg.agv_joint.PZ_PY_PRI, self.cfg.agv_joint.PY_PX_PRI])
         self.action_scale = self.cfg.action_scale
 
         # self.joint_pos = self._agv.data.joint_pos
@@ -174,11 +174,11 @@ class AGVEnv(DirectRLEnv):
         self.single_action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions,))
 
         # batch the spaces for vectorized environments
-        self.observation_space = gym.vector.utils.batch_space(self.single_observation_space, self.num_envs)
+        self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
         self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
 
         # RL specifics
-        self.actions = torch.zeros(self.num_envs, self.num_actions, device=self.sim.device)
+        # self.actions = torch.zeros(self.num_envs, self.num_actions, device=self.sim.device)
 
     def _setup_scene(self):
         # print(4)
@@ -216,8 +216,8 @@ class AGVEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         # print(6)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self._PZ_PY_PRI_idx)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
+        self._agv.set_joint_effort_target(self.actions, joint_ids=self._XY_PRI_idx)
+        # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
         self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
 
     def _get_observations(self) -> dict:
@@ -225,16 +225,15 @@ class AGVEnv(DirectRLEnv):
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
         tensor = self._rcam.data.output[data_type].clone()[:,:,:,:3]
         #tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
-        observations = {"policy": tensor.type(torch.cuda.FloatTensor).view(1, -1)}
 
         if self.cfg.write_image_to_file:
-            # save_images_to_file(observations["policy"], f"agv_{data_type}.png")
-            tensor = observations["policy"].squeeze(0)  # Shape now [512, 512, 4]
-            array = tensor.cpu().numpy()
+            array = tensor.squeeze(0).cpu().numpy()
             array = (array - array.min()) / (array.max() - array.min()) * 255
             array = array.astype('uint8')  # Convert to uint8 data type
             image = Image.fromarray(array)
             image.save('output_image.png')
+        
+        observations = {"policy": (tensor.type(torch.cuda.FloatTensor)/255.0).view(1, -1)}
 
         return observations
 
@@ -401,12 +400,23 @@ class AGVEnv(DirectRLEnv):
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
-        diff = torch.sub(pin_pos_w, hole_pos_w)
-        dist = torch.norm(diff, dim=1)
-        rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist)
-        return rew
+        # diff = torch.sub(pin_pos_w, hole_pos_w)
+        # dist = torch.norm(diff, dim=1)
+        # rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist)
 
-    def initial_pin_position(self) -> torch.Tensor:
+        hole_xy = hole_pos_w[:, 0:1]
+        pin_xy = pin_pos_w[:, 0:1]
+        xy_distance = torch.norm(torch.sub(hole_xy, pin_xy), dim=1)
+        xy_rew = torch.sub(self.init_xy_distance_r, xy_distance)
+
+        hole_z = hole_pos_w[:, 2]
+        pin_z = pin_pos_w[:, 2]
+        z_dist = torch.sub(hole_z, pin_z)
+        z_rew = torch.sub(self.init_z_distance_r, z_dist)
+
+        return xy_rew + z_rew
+
+    def initial_pin_position(self):
         r_pin: RigidObject = self.scene["rpin"]
         l_pin: RigidObject = self.scene["lpin"]
         r_pin_rel = torch.tensor([0, 0.02, 0.479], device="cuda:0")
