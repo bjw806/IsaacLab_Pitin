@@ -225,7 +225,7 @@ class AGVEnv(DirectRLEnv):
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
         tensor = self._rcam.data.output[data_type].clone()[:,:,:,:3]
         #tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
-        observations = {"policy": tensor}#.view(-1)
+        observations = {"policy": tensor.type(torch.cuda.FloatTensor).view(1, -1)}
 
         if self.cfg.write_image_to_file:
             # save_images_to_file(observations["policy"], f"agv_{data_type}.png")

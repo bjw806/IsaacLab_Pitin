@@ -51,12 +51,11 @@ class Policy(GaussianMixin, Model):
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs, role):
-        # Convert inputs to float and normalize
-        states = inputs["states"].float() / 255.0  # Assuming the input is in the range 0-255
-        # view (samples, width * height * channels) -> (samples, width, height, channels)
-        # permute (samples, width, height, channels) -> (samples, channels, width, height)
-        x = self.net(states.view(-1, *self.observation_space.shape).permute(0, 3, 1, 2))
-        return 10 * torch.tanh(x), self.log_std_parameter, {}  # JetBotEnv action_space is -10 to 10
+        return (
+            self.net(inputs["states"].view(-1, *self.observation_space.shape).permute(0, 3, 1, 2)),
+            self.log_std_parameter,
+            {},
+        )
 
 
 class Value(DeterministicMixin, Model):
@@ -84,8 +83,7 @@ class Value(DeterministicMixin, Model):
         )
 
     def compute(self, inputs, role):
-        states = inputs["states"].float() / 255.0
-        x = self.net(states.view(-1, *self.observation_space.shape).permute(0, 3, 1, 2))
+        x = self.net(inputs["states"].view(-1, *self.observation_space.shape).permute(0, 3, 1, 2))
         return x, {}
 
 
