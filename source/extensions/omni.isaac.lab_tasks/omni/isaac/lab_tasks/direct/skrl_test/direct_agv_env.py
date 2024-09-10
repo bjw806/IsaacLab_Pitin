@@ -22,6 +22,7 @@ from omni.isaac.lab.sensors import (
     ContactSensor,
     ContactSensorCfg,
     save_images_to_file,
+    SensorBase,
 )
 from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.utils import configclass
@@ -78,7 +79,6 @@ class AGVEnvCfg(DirectRLEnvCfg):
 
     agv_joint: AGV_JOINT = AGV_JOINT()
 
-    
     lpin_cfg = RigidObjectCfg(
         prim_path=f"{ENV_REGEX_NS}/AGV/lpin_1",
         spawn=None,
@@ -95,7 +95,6 @@ class AGVEnvCfg(DirectRLEnvCfg):
     agv_contact_cfg = ContactSensorCfg(
         prim_path=f"{ENV_REGEX_NS}/AGV/mb_1",
     )
-    
 
     num_observations = num_channels * rcam.height * rcam.width
     write_image_to_file = False
@@ -223,17 +222,17 @@ class AGVEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         # print(7)
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
-        tensor = self._rcam.data.output[data_type].clone()[:,:,:,:3]
-        #tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
+        tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
+        # tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
 
         if self.cfg.write_image_to_file:
             array = tensor.squeeze(0).cpu().numpy()
             array = (array - array.min()) / (array.max() - array.min()) * 255
-            array = array.astype('uint8')  # Convert to uint8 data type
+            array = array.astype("uint8")  # Convert to uint8 data type
             image = Image.fromarray(array)
-            image.save('output_image.png')
-        
-        observations = {"policy": (tensor.type(torch.cuda.FloatTensor)/255.0).view(1, -1)}
+            image.save("output_image.png")
+
+        observations = {"policy": (tensor.type(torch.cuda.FloatTensor) / 255.0).view(1, -1)}
 
         return observations
 
@@ -242,8 +241,9 @@ class AGVEnv(DirectRLEnv):
         rew_alive = 1.0 - self.reset_terminated.float()
         rew_termination = self.reset_terminated.float()
         rew_pin_r = self.pin_reward(True)
+        uc = self.is_undesired_contacts(self._niro_contact).float()
 
-        total_reward = rew_alive*0.01 + rew_termination + rew_pin_r
+        total_reward = rew_alive*0.01 + rew_termination + rew_pin_r*0.01 - uc
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -400,21 +400,23 @@ class AGVEnv(DirectRLEnv):
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
-        # diff = torch.sub(pin_pos_w, hole_pos_w)
-        # dist = torch.norm(diff, dim=1)
-        # rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist)
+        diff = torch.sub(pin_pos_w, hole_pos_w)
+        dist = torch.norm(diff, dim=1)
+        rew = torch.sub(self.init_distance_r if right else self.init_distance_l, dist)
 
-        hole_xy = hole_pos_w[:, 0:1]
-        pin_xy = pin_pos_w[:, 0:1]
-        xy_distance = torch.norm(torch.sub(hole_xy, pin_xy), dim=1)
-        xy_rew = torch.sub(self.init_xy_distance_r, xy_distance)
+        ones = torch.ones_like(rew)
+        r = torch.where(dist < 0.005, ones*10, rew)
+        # hole_xy = hole_pos_w[:, 0:1]
+        # pin_xy = pin_pos_w[:, 0:1]
+        # xy_distance = torch.norm(torch.sub(hole_xy, pin_xy), dim=1)
+        # xy_rew = torch.sub(self.init_xy_distance_r, xy_distance)
 
-        hole_z = hole_pos_w[:, 2]
-        pin_z = pin_pos_w[:, 2]
-        z_dist = torch.sub(hole_z, pin_z)
-        z_rew = torch.sub(self.init_z_distance_r, z_dist)
+        # hole_z = hole_pos_w[:, 2]
+        # pin_z = pin_pos_w[:, 2]
+        # z_dist = torch.sub(hole_z, pin_z)
+        # z_rew = torch.sub(self.init_z_distance_r, z_dist)
 
-        return xy_rew + z_rew
+        return r
 
     def initial_pin_position(self):
         r_pin: RigidObject = self.scene["rpin"]
@@ -434,23 +436,19 @@ class AGVEnv(DirectRLEnv):
         self.init_distance_l = torch.norm(distance_l, dim=1)
         self.init_distance_r = torch.norm(distance_r, dim=1)
 
-        r_hole_z = r_hole_pos_w[:, 2]
-        r_pin_z = r_pin_pos_w[:, 2]
+        # r_hole_z = r_hole_pos_w[:, 2]
+        # r_pin_z = r_pin_pos_w[:, 2]
 
-        self.init_z_distance_r = torch.sub(r_hole_z, r_pin_z)
+        # self.init_z_distance_r = torch.sub(r_hole_z, r_pin_z)
 
-        r_hole_xy = r_hole_pos_w[:, 0:1]
-        r_pin_xy = r_pin_pos_w[:, 0:1]
+        # r_hole_xy = r_hole_pos_w[:, 0:1]
+        # r_pin_xy = r_pin_pos_w[:, 0:1]
 
-        self.init_xy_distance_r = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
+        # self.init_xy_distance_r = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
 
         # print(f"rinit: {init_distances_r}")
 
-    def cam_rgb(self, right: bool = True):
-        camera: Camera = self.scene[f"{'r' if right else 'l'}cam"]
-        observations = camera.data.output["rgb"].clone()
-        rgb = observations[:, :, :, :3]  # .flatten(start_dim=1)
-        # grayscale = (0.2989 * rgb[:, :, :, 0] +
-        #              0.5870 * rgb[:, :, :, 1] +
-        #              0.1140 * rgb[:, :, :, 2])
-        return rgb
+    def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
+        net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
+        is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
+        return is_contact
