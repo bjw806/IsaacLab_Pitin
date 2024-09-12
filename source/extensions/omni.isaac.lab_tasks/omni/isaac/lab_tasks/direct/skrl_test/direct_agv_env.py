@@ -230,7 +230,7 @@ class AGVEnv(DirectRLEnv):
             image = Image.fromarray(array)
             image.save("output_image.png")
 
-        observations = {"policy": (tensor.type(torch.cuda.FloatTensor) / 255.0).view(1, -1)}
+        observations = {"policy": (tensor.type(torch.cuda.FloatTensor) / 255.0)}
 
         return observations
 
@@ -243,7 +243,7 @@ class AGVEnv(DirectRLEnv):
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int()
 
         # sum
-        total_reward = torch.sum([rew_pin_r, z_penalty, contact_penalty], keepdim=True)
+        total_reward = rew_pin_r + z_penalty + contact_penalty
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -429,7 +429,7 @@ class AGVEnv(DirectRLEnv):
 
         relative_z_dist = torch.linalg.vector_norm(torch.sub(prev_z_dist, curr_z_dist), ord=2)
 
-        self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = (curr_pin_pos_w,)
+        self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
         return curr_xy_rew + curr_z_rew + relative_xy_dist + relative_z_dist
 
@@ -443,8 +443,6 @@ class AGVEnv(DirectRLEnv):
         l_pin_pos_w = torch.add(l_pin.data.root_pos_w, l_pin_rel)
         l_hole_pos_w = self.hole_position(False)
         r_hole_pos_w = self.hole_position(True)
-        l_pin_pos_w = self.pin_position(False)
-        r_pin_pos_w = self.pin_position(True)
         distance_l = torch.sub(l_pin_pos_w, l_hole_pos_w)
         distance_r = torch.sub(r_pin_pos_w, r_hole_pos_w)
 
@@ -468,5 +466,5 @@ class AGVEnv(DirectRLEnv):
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
         net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
-        is_contact = torch.max(torch.linalg.vector_norm(net_contact_forces[:, :, 0], dim=-1), ord=2)[0] > 0
+        is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
         return is_contact
