@@ -115,8 +115,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = rollouts
-cfg["learning_epochs"] = 32
-cfg["mini_batches"] = 128
+cfg["learning_epochs"] = 16
+cfg["mini_batches"] = 64
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4

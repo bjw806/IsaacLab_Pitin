@@ -237,10 +237,10 @@ class AGVEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # reward
         rew_pin_r = self.pin_reward(True)
-        correct_rew = self.pin_correct(True).int() * self.init_distance_r * 100
+        correct_rew = self.pin_correct(True).int() * self.init_distance_r * 10000
 
         # penalty
-        z_penalty = -self.terminate_z().int() * self.get_dist(self.pin_position(True), self.hole_position(True)) * 100
+        z_penalty = -self.terminate_z().int() * self.get_dist(self.pin_position(True), self.hole_position(True)) * 10000
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int()
 
         # sum
@@ -396,14 +396,13 @@ class AGVEnv(DirectRLEnv):
         y_distance = torch.linalg.vector_norm(torch.sub(r_hole_y, r_pin_y), ord=2)
         y_condition = y_distance >= 0.01
 
-        result = torch.where(z_condition & y_condition, torch.tensor(True), torch.tensor(False))
-        return result
+        return z_condition and y_condition
 
     def pin_correct(self, right: bool = True):
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
         distance = torch.linalg.vector_norm(torch.sub(hole_pos_w, pin_pos_w), ord=2)
-        return torch.where(distance < 0.005, torch.tensor(True), torch.tensor(False))
+        return distance < 0.005
     
     def get_dist(self, src, dist):
         return torch.linalg.vector_norm(torch.sub(src, dist), ord=2)
@@ -423,7 +422,7 @@ class AGVEnv(DirectRLEnv):
 
         xy_diff = torch.sub(prev_xy_distance, curr_xy_distance)
         relative_xy_dist = self.get_dist(prev_xy_distance, curr_xy_distance)
-        relative_xy_rew = torch.where(xy_diff > 0, relative_xy_dist, -relative_xy_dist)
+        relative_xy_rew = torch.where(xy_diff > 0, relative_xy_dist, -relative_xy_dist)*100
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
@@ -439,7 +438,7 @@ class AGVEnv(DirectRLEnv):
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        return curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
+        return curr_xy_rew*10 + curr_z_rew + relative_xy_rew*10 + relative_z_rew
 
     def initial_pin_position(self):
         r_pin: RigidObject = self.scene["rpin"]
