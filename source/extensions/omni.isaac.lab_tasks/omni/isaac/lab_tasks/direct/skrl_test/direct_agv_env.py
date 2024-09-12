@@ -245,6 +245,9 @@ class AGVEnv(DirectRLEnv):
 
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
+
+        UP = "\x1B[3A"
+        print(f"\npin: {rew_pin_r.item()} correct: {correct_rew.item()} z: {z_penalty.item()} contact: {contact_penalty.item()} total: {total_reward.item()}\n{UP}\r")
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
