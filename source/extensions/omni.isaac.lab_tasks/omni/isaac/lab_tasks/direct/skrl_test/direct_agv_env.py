@@ -237,13 +237,14 @@ class AGVEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # reward
         rew_pin_r = self.pin_reward(True)
+        correct_rew = self.pin_correct(True).int() * self.init_distance_r * 100
 
         # penalty
-        z_penalty = -self.terminate_z().int()
+        z_penalty = -self.terminate_z().int() * self.get_dist(self.pin_position(True), self.hole_position(True)) * 100
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int()
 
         # sum
-        total_reward = rew_pin_r + z_penalty + contact_penalty
+        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -403,6 +404,9 @@ class AGVEnv(DirectRLEnv):
         pin_pos_w = self.pin_position(right)
         distance = torch.linalg.vector_norm(torch.sub(hole_pos_w, pin_pos_w), ord=2)
         return torch.where(distance < 0.005, torch.tensor(True), torch.tensor(False))
+    
+    def get_dist(self, src, dist):
+        return torch.linalg.vector_norm(torch.sub(src, dist), ord=2)
 
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         hole_pos_w = self.hole_position(right)
@@ -411,13 +415,15 @@ class AGVEnv(DirectRLEnv):
 
         hole_xy = hole_pos_w[:, 0:1]
         curr_pin_xy = curr_pin_pos_w[:, 0:1]
-        curr_xy_distance = torch.linalg.vector_norm(torch.sub(hole_xy, curr_pin_xy), ord=2)
+        curr_xy_distance = self.get_dist(hole_xy, curr_pin_xy)
         curr_xy_rew = torch.sub(self.init_xy_distance_r, curr_xy_distance)
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
-        prev_xy_distance = torch.linalg.vector_norm(torch.sub(hole_xy, prev_pin_xy), ord=2)
+        prev_xy_distance = self.get_dist(hole_xy, prev_pin_xy)
 
-        relative_xy_dist = torch.linalg.vector_norm(torch.sub(prev_xy_distance, curr_xy_distance), ord=2)
+        xy_diff = torch.sub(prev_xy_distance, curr_xy_distance)
+        relative_xy_dist = self.get_dist(prev_xy_distance, curr_xy_distance)
+        relative_xy_rew = torch.where(xy_diff > 0, relative_xy_dist, -relative_xy_dist)
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
@@ -427,11 +433,13 @@ class AGVEnv(DirectRLEnv):
         prev_pin_z = curr_pin_pos_w[:, 2]
         prev_z_dist = torch.sub(hole_z, prev_pin_z)
 
-        relative_z_dist = torch.linalg.vector_norm(torch.sub(prev_z_dist, curr_z_dist), ord=2)
+        z_diff = torch.sub(prev_z_dist, curr_z_dist)
+        relative_z_dist = self.get_dist(prev_z_dist, curr_z_dist)
+        relative_z_rew = torch.where(z_diff > 0, relative_z_dist, -relative_z_dist)
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        return curr_xy_rew + curr_z_rew + relative_xy_dist + relative_z_dist
+        return curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
 
     def initial_pin_position(self):
         r_pin: RigidObject = self.scene["rpin"]
@@ -443,25 +451,23 @@ class AGVEnv(DirectRLEnv):
         l_pin_pos_w = torch.add(l_pin.data.root_pos_w, l_pin_rel)
         l_hole_pos_w = self.hole_position(False)
         r_hole_pos_w = self.hole_position(True)
-        distance_l = torch.sub(l_pin_pos_w, l_hole_pos_w)
-        distance_r = torch.sub(r_pin_pos_w, r_hole_pos_w)
 
-        self.init_distance_l = torch.linalg.vector_norm(distance_l, ord=2)
-        self.init_distance_r = torch.linalg.vector_norm(distance_r, ord=2)
+        self.init_distance_l = self.get_dist(l_pin_pos_w, l_hole_pos_w)
+        self.init_distance_r = self.get_dist(r_pin_pos_w, r_hole_pos_w)
 
         r_hole_z = r_hole_pos_w[:, 2]
         r_pin_z = r_pin_pos_w[:, 2]
 
-        self.init_z_distance_r = torch.sub(r_hole_z, r_pin_z)
+        self.init_z_distance_r = self.get_dist(r_hole_z, r_pin_z)
 
         r_hole_xy = r_hole_pos_w[:, 0:1]
         r_pin_xy = r_pin_pos_w[:, 0:1]
 
-        self.init_xy_distance_r = torch.linalg.vector_norm(torch.sub(r_hole_xy, r_pin_xy), ord=2)
+        self.init_xy_distance_r = self.get_dist(r_hole_xy, r_pin_xy)
 
         self.prev_pos_w = {
             "r_pin": r_pin_pos_w,
-            "l_pin": (0, 0, 0),
+            "l_pin": l_pin_pos_w,
         }
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
