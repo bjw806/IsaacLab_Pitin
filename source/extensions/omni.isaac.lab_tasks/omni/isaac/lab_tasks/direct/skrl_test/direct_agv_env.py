@@ -270,7 +270,7 @@ class AGVEnv(DirectRLEnv):
         self._agv.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._agv.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
 
-        self.randomize_joints_by_offset(env_ids, (-0.05, 0.05), "agv")
+        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
         self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
 
         self.initial_pin_position()
