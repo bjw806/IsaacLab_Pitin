@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 # import the skrl components to build the RL system
-from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
+from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -11,7 +11,7 @@ from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
 # seed for reproducibility
-set_seed()  # e.g. `set_seed(42)` for fixed seed
+set_seed(42)  # e.g. `set_seed(42)` for fixed seed
 
 
 # define models (stochastic and deterministic models) using mixins
@@ -115,8 +115,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = rollouts
-cfg["learning_epochs"] = 10
-cfg["mini_batches"] = 10
+cfg["learning_epochs"] = 32
+cfg["mini_batches"] = 128
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4
@@ -133,7 +133,7 @@ cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
 cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
 
 # logging to TensorBoard and write checkpoints (in timesteps)
-cfg["experiment"]["write_interval"] = 300
+cfg["experiment"]["write_interval"] = 1000
 cfg["experiment"]["checkpoint_interval"] = 100000
 cfg["experiment"]["directory"] = "runs/torch/AGV"
 
