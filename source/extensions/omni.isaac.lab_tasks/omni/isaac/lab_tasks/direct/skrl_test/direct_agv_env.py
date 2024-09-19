@@ -442,7 +442,7 @@ class AGVEnv(DirectRLEnv):
         reward = curr_xy_rew*10 + curr_z_rew + relative_xy_rew*10 + relative_z_rew
         
         UP = "\x1B[3A"
-        print(f"\n___{reward[0]}___\n{UP}\r")
+        print(f"\n___{round(reward[0].item(), 2)}___\n{UP}\r")
 
         return reward
 
