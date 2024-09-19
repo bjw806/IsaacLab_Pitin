@@ -5,6 +5,7 @@ import numpy as np
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
+import torch.nn.functional as F
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -240,14 +241,14 @@ class AGVEnv(DirectRLEnv):
         correct_rew = self.pin_correct(True).int() * self.init_distance_r * 10000
 
         # penalty
-        z_penalty = -self.terminate_z().int() * self.get_dist(self.pin_position(True), self.hole_position(True)) * 10000
+        z_penalty = -self.terminate_z().int() * self.euclidean_distance(self.pin_position(True), self.hole_position(True)) * 10000
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int()
 
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
 
-        UP = "\x1B[3A"
-        print(f"\npin: {rew_pin_r.item()} correct: {correct_rew.item()} z: {z_penalty.item()} contact: {contact_penalty.item()} total: {total_reward.item()}\n{UP}\r")
+        # UP = "\x1B[3A"
+        # print(f"\npin: {round(rew_pin_r.item(), 2)} correct: {round(correct_rew.item(), 2)} z: {round(z_penalty.item(), 2)} contact: {round(contact_penalty.item(), 2)} total: {round(total_reward.item(), 2)}_\n{UP}\r")
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -259,7 +260,7 @@ class AGVEnv(DirectRLEnv):
         pin_out_of_hole = self.terminate_z()
         pin_in_hole = self.pin_correct(True)
 
-        return pin_in_hole or pin_out_of_hole, time_out
+        return torch.logical_or(pin_in_hole, pin_out_of_hole), time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         # print(10)
@@ -273,7 +274,7 @@ class AGVEnv(DirectRLEnv):
         self._agv.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._agv.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
 
-        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
+        self.randomize_joints_by_offset(env_ids, (0, 0), "agv")
         self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
 
         self.initial_pin_position()
@@ -396,19 +397,20 @@ class AGVEnv(DirectRLEnv):
 
         z_condition = r_pin_z >= r_hole_z
 
-        y_distance = torch.linalg.vector_norm(torch.sub(r_hole_y, r_pin_y), ord=2)
+        y_distance = r_hole_y - r_pin_y
         y_condition = y_distance >= 0.01
 
-        return z_condition and y_condition
+        return torch.logical_and(z_condition, y_condition)
 
     def pin_correct(self, right: bool = True):
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
-        distance = torch.linalg.vector_norm(torch.sub(hole_pos_w, pin_pos_w), ord=2)
+        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
         return distance < 0.005
     
-    def get_dist(self, src, dist):
-        return torch.linalg.vector_norm(torch.sub(src, dist), ord=2)
+    def euclidean_distance(self, src, dist):
+        distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=1))
+        return distance
 
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         hole_pos_w = self.hole_position(right)
@@ -417,31 +419,32 @@ class AGVEnv(DirectRLEnv):
 
         hole_xy = hole_pos_w[:, 0:1]
         curr_pin_xy = curr_pin_pos_w[:, 0:1]
-        curr_xy_distance = self.get_dist(hole_xy, curr_pin_xy)
-        curr_xy_rew = torch.sub(self.init_xy_distance_r, curr_xy_distance)
+        curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
+        curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
-        prev_xy_distance = self.get_dist(hole_xy, prev_pin_xy)
+        prev_xy_distance = self.euclidean_distance(hole_xy, prev_pin_xy)
 
-        xy_diff = torch.sub(prev_xy_distance, curr_xy_distance)
-        relative_xy_dist = self.get_dist(prev_xy_distance, curr_xy_distance)
-        relative_xy_rew = torch.where(xy_diff > 0, relative_xy_dist, -relative_xy_dist)*100
+        relative_xy_rew = (prev_xy_distance - curr_xy_distance)*100
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
-        curr_z_dist = torch.sub(hole_z, curr_pin_z)
-        curr_z_rew = torch.sub(self.init_z_distance_r, curr_z_dist)
+        curr_z_dist = hole_z - curr_pin_z
+        curr_z_rew = self.init_z_distance_r - curr_z_dist
 
         prev_pin_z = curr_pin_pos_w[:, 2]
-        prev_z_dist = torch.sub(hole_z, prev_pin_z)
+        prev_z_dist = hole_z - prev_pin_z
 
-        z_diff = torch.sub(prev_z_dist, curr_z_dist)
-        relative_z_dist = self.get_dist(prev_z_dist, curr_z_dist)
-        relative_z_rew = torch.where(z_diff > 0, relative_z_dist, -relative_z_dist)
+        relative_z_rew = prev_z_dist - curr_z_dist
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        return curr_xy_rew*10 + curr_z_rew + relative_xy_rew*10 + relative_z_rew
+        reward = curr_xy_rew*10 + curr_z_rew + relative_xy_rew*10 + relative_z_rew
+        
+        UP = "\x1B[3A"
+        print(f"\n___{reward[0]}___\n{UP}\r")
+
+        return reward
 
     def initial_pin_position(self):
         r_pin: RigidObject = self.scene["rpin"]
@@ -454,18 +457,18 @@ class AGVEnv(DirectRLEnv):
         l_hole_pos_w = self.hole_position(False)
         r_hole_pos_w = self.hole_position(True)
 
-        self.init_distance_l = self.get_dist(l_pin_pos_w, l_hole_pos_w)
-        self.init_distance_r = self.get_dist(r_pin_pos_w, r_hole_pos_w)
+        self.init_distance_l = self.euclidean_distance(l_pin_pos_w, l_hole_pos_w)
+        self.init_distance_r = self.euclidean_distance(r_pin_pos_w, r_hole_pos_w)
 
         r_hole_z = r_hole_pos_w[:, 2]
         r_pin_z = r_pin_pos_w[:, 2]
 
-        self.init_z_distance_r = self.get_dist(r_hole_z, r_pin_z)
+        self.init_z_distance_r = r_hole_z - r_pin_z
 
         r_hole_xy = r_hole_pos_w[:, 0:1]
         r_pin_xy = r_pin_pos_w[:, 0:1]
 
-        self.init_xy_distance_r = self.get_dist(r_hole_xy, r_pin_xy)
+        self.init_xy_distance_r = self.euclidean_distance(r_hole_xy, r_pin_xy)
 
         self.prev_pos_w = {
             "r_pin": r_pin_pos_w,
