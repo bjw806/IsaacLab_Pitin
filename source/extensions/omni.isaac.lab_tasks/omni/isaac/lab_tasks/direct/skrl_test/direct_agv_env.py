@@ -28,6 +28,7 @@ from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from omni.isaac.lab.utils import configclass
 from PIL import Image
+from pxr import UsdGeom
 
 from .agv_cfg import AGV_CFG, AGV_JOINT
 from omni.isaac.lab.markers import VisualizationMarkersCfg, VisualizationMarkers
@@ -45,6 +46,8 @@ def define_markers() -> VisualizationMarkers:
         },
     )
     return VisualizationMarkers(marker_cfg)
+
+
 ##
 # Scene definition
 ##
@@ -59,9 +62,9 @@ class AGVEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
-    num_actions = 1
+    num_actions = 3
     num_channels = 3
-    num_states = 0
+    num_states = 2
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=dt, render_interval=decimation)
@@ -74,8 +77,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=320,
-        height=320,
+        width=300,
+        height=300,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -139,6 +142,9 @@ class AGVEnv(DirectRLEnv):
         self._RR_RPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.RR_RPIN_PRI)
         self._XY_PRI_idx, _ = self._agv.find_joints([self.cfg.agv_joint.PZ_PY_PRI, self.cfg.agv_joint.PY_PX_PRI])
         self.action_scale = self.cfg.action_scale
+        self.joint_pos = self._agv.data.joint_pos
+        self.joint_vel = self._agv.data.joint_vel 
+
         self.init_reset = True
 
         # self.joint_pos = self._agv.data.joint_pos
@@ -156,8 +162,7 @@ class AGVEnv(DirectRLEnv):
         super().close()
 
     def _configure_gym_env_spaces(self):
-        # print(3)
-        """Configure the action and observation spaces for the Gym environment."""
+        # Configure the action and observation spaces for the Gym environment.
         # observation space (unbounded since we don't impose any limits)
         self.num_actions = self.cfg.num_actions
         self.num_observations = self.cfg.num_observations
@@ -174,6 +179,9 @@ class AGVEnv(DirectRLEnv):
                 self.cfg.num_channels,
             ),
         )
+
+        if not self.cfg.num_states:
+            self.state_space = None
         if self.num_states > 0:
             self.single_observation_space["critic"] = gym.spaces.Box(
                 low=-np.inf,
@@ -184,16 +192,21 @@ class AGVEnv(DirectRLEnv):
                     self.cfg.num_channels,
                 ),
             )
-        self.single_action_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.num_actions,)
-        )
+            # shape=(self.num_states,)
+            self.state_space = gym.vector.utils.batch_space(self.single_observation_space["critic"], self.num_envs)
+        else:
+            self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.cfg.num_states,))
+
+        self.single_action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions,))
 
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(
-            self.single_observation_space["policy"], self.num_envs
+            self.single_observation_space["policy"],
+            self.num_envs,
         )
         self.action_space = gym.vector.utils.batch_space(
-            self.single_action_space, self.num_envs
+            self.single_action_space,
+            self.num_envs,
         )
 
         # RL specifics
@@ -229,7 +242,7 @@ class AGVEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        self.my_visualizer = define_markers()           
+        self.my_visualizer = define_markers()
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # print(5)
@@ -237,15 +250,25 @@ class AGVEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         # print(6)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self._XY_PRI_idx)
+        self._agv.set_joint_effort_target(self.actions, joint_ids=self._XY_PRI_idx + self._RR_RPIN_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
+        # self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
 
     def _get_observations(self) -> dict:
-        # print(7)
+        if self.init_reset:
+            self.initial_pin_position()
+        
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
         # tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
+
+        values = torch.cat(
+            (
+                self.joint_vel[:, self._RR_RPIN_PRI_idx[0]].unsqueeze(dim=1),
+                self.joint_vel[:, self._XY_PRI_idx[0]].unsqueeze(dim=1),
+            ),
+            dim=-1,
+        )
 
         if self.cfg.write_image_to_file:
             array = tensor.squeeze(0).cpu().numpy()
@@ -254,13 +277,53 @@ class AGVEnv(DirectRLEnv):
             image = Image.fromarray(array)
             image.save("output_image.png")
 
-        observations = {"policy": (tensor.type(torch.cuda.FloatTensor) / 255.0)}
+        observations = {
+            "policy": tensor.type(torch.cuda.FloatTensor) / 255.0,
+            # {
+            #     "value": values,
+            #     "image": tensor.type(torch.cuda.FloatTensor) / 255.0,
+            # },
+            "critic": self._get_states(),
+        }
 
         return observations
+    
+    def _get_states(self) -> torch.Tensor:
+        joint_pos_limits = self._agv.root_physx_view.get_dof_limits().to(self.device)
+        dof_lower_limits = joint_pos_limits[..., 0]
+        dof_upper_limits = joint_pos_limits[..., 1]
+        vel_obs_scale = 0.2
+        num_xy_joints = len(self._XY_PRI_idx)
+
+        states = torch.cat(
+            (
+                # DOF positions (24)
+                unscale(self._agv.data.joint_pos, dof_lower_limits, dof_upper_limits),
+                # DOF velocities (24)
+                vel_obs_scale * self._agv.data.joint_vel,
+                self._agv.data.body_pos_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 3),
+                self._agv.data.body_quat_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 4),
+                self._agv.data.body_vel_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 6),
+                # applied actions (20)
+                self.actions,
+                # rpin
+                self.pin_position(True) - self.scene.env_origins,
+                self._rpin.data.root_quat_w,
+                self._rpin.data.root_vel_w,
+                self._rpin.data.root_lin_vel_w,
+                self._rpin.data.root_ang_vel_w,
+                # initial values
+                self.init_hole_pos,
+                self.init_pin_pos,
+                # self.init_distance_r,
+                # self.init_distance_l,
+            ),
+            dim=-1,
+        )
+
+        return states
 
     def _get_rewards(self) -> torch.Tensor:
-        if self.init_reset:
-            self.initial_pin_position()
         # reward
         rew_pin_r = self.pin_reward(True)
         correct_rew = self.pin_correct(True).int() * self.init_distance_r * 1000
@@ -294,7 +357,7 @@ class AGVEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
 
-        self.randomize_joints_by_offset(env_ids, (-.03, .03), "agv")
+        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
         self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
         self.init_reset = True
 
@@ -314,25 +377,15 @@ class AGVEnv(DirectRLEnv):
         # articulations
         for articulation_asset in self.scene.articulations.values():
             # obtain default and deal with the offset for env origins
-            default_root_state = articulation_asset.data.default_root_state[
-                env_ids
-            ].clone()
+            default_root_state = articulation_asset.data.default_root_state[env_ids].clone()
             default_root_state[:, 0:3] += self.scene.env_origins[env_ids]
             # set into the physics simulation
-            articulation_asset.write_root_state_to_sim(
-                default_root_state, env_ids=env_ids
-            )
+            articulation_asset.write_root_state_to_sim(default_root_state, env_ids=env_ids)
             # obtain default joint positions
-            default_joint_pos = articulation_asset.data.default_joint_pos[
-                env_ids
-            ].clone()
-            default_joint_vel = articulation_asset.data.default_joint_vel[
-                env_ids
-            ].clone()
+            default_joint_pos = articulation_asset.data.default_joint_pos[env_ids].clone()
+            default_joint_vel = articulation_asset.data.default_joint_vel[env_ids].clone()
             # set into the physics simulation
-            articulation_asset.write_joint_state_to_sim(
-                default_joint_pos, default_joint_vel, env_ids=env_ids
-            )
+            articulation_asset.write_joint_state_to_sim(default_joint_pos, default_joint_vel, env_ids=env_ids)
 
     def randomize_joints_by_offset(
         self,
@@ -370,18 +423,14 @@ class AGVEnv(DirectRLEnv):
 
         # Random offsets for X and Y coordinates
         xy_random_offsets = torch.tensor(
-            np.random.uniform(
-                xy_low, xy_high, size=(default_root_state.shape[0], 2)
-            ),  # For X and Y only
+            np.random.uniform(xy_low, xy_high, size=(default_root_state.shape[0], 2)),  # For X and Y only
             dtype=default_root_state.dtype,
             device=default_root_state.device,
         )
 
         # Random offsets for Z coordinate
         z_random_offsets = torch.tensor(
-            np.random.uniform(
-                z_low, z_high, size=(default_root_state.shape[0], 1)
-            ),  # For Z only
+            np.random.uniform(z_low, z_high, size=(default_root_state.shape[0], 1)),  # For Z only
             dtype=default_root_state.dtype,
             device=default_root_state.device,
         )
@@ -404,9 +453,7 @@ class AGVEnv(DirectRLEnv):
 
     def hole_position(self, right: bool = True):
         # niro: RigidObject = self.scene.rigid_objects["niro"]
-        niro_pos = (
-            self._niro.data.root_pos_w
-        )  # torch.tensor([-0.5000,  0.0000,  1.1000], device="cuda:0")
+        niro_pos = self._niro.data.root_pos_w  # torch.tensor([-0.5000,  0.0000,  1.1000], device="cuda:0")
         hole_rel = torch.tensor(
             [0.455, 0.693 if right else -0.693, 0.0654],
             device="cuda:0",
@@ -474,7 +521,7 @@ class AGVEnv(DirectRLEnv):
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        reward = curr_xy_rew*10 + curr_z_rew*10 + relative_xy_rew + relative_z_rew
+        reward = curr_xy_rew * 5 + curr_z_rew * 3 + relative_xy_rew + relative_z_rew
 
         UP = "\x1b[3A"
         print(f"\n___{round(reward[0].item(), 4)}___\n{UP}\r")
@@ -517,3 +564,22 @@ class AGVEnv(DirectRLEnv):
         net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
         is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
         return is_contact
+    
+    def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
+        world_transform = xformable.ComputeLocalToWorldTransform(0)
+        world_pos = world_transform.ExtractTranslation()
+        world_quat = world_transform.ExtractRotationQuat()
+
+        px = world_pos[0] - env_pos[0]
+        py = world_pos[1] - env_pos[1]
+        pz = world_pos[2] - env_pos[2]
+        qx = world_quat.imaginary[0]
+        qy = world_quat.imaginary[1]
+        qz = world_quat.imaginary[2]
+        qw = world_quat.real
+
+        return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+
+@torch.jit.script
+def unscale(x, lower, upper):
+    return (2.0 * x - upper - lower) / (upper - lower)
