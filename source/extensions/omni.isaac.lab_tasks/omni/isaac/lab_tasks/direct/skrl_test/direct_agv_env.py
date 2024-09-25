@@ -5,7 +5,6 @@ import numpy as np
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
-import torch.nn.functional as F
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -17,6 +16,7 @@ from omni.isaac.lab.envs import (
     DirectRLEnvCfg,
     ViewerCfg,
 )
+from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
 from omni.isaac.lab.sensors import (
     Camera,
@@ -27,13 +27,12 @@ from omni.isaac.lab.sensors import (
 from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from omni.isaac.lab.utils import configclass
+from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from PIL import Image
 from pxr import UsdGeom
 
-from .agv_cfg import AGV_CFG, AGV_JOINT, AGVEventCfg
-from omni.isaac.lab.markers import VisualizationMarkersCfg, VisualizationMarkers
-from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
-from omni.isaac.lab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+from .agv_cfg import AGV_CFG, AGV_JOINT
+
 
 def define_markers() -> VisualizationMarkers:
     marker_cfg = VisualizationMarkersCfg(
@@ -64,7 +63,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     action_scale = 100.0  # [N]
     num_actions = 3
     num_channels = 3
-    num_states = 57
+    num_states = 71
     # events = AGVEventCfg()
 
     # simulation
@@ -133,7 +132,6 @@ class AGVEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(4.0, 0.0, 3.0))
 
     # scene
-    # scene: AGVSceneCfg = AGVSceneCfg(num_envs=4, env_spacing=3.0, replicate_physics=True)
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4, env_spacing=3.0, replicate_physics=True)
 
 
@@ -155,10 +153,11 @@ class AGVEnv(DirectRLEnv):
         # self._LR_LPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.LR_LPIN_PRI)
         # self._RR_RPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.RR_RPIN_PRI)
         self._RPIN_idx, _ = self._agv.find_bodies("rpin_1")
+        self._LPIN_idx, _ = self._agv.find_bodies("lpin_1")
         # self._XY_PRI_idx, _ = self._agv.find_joints([self.cfg.agv_joint.PZ_PY_PRI, self.cfg.agv_joint.PY_PX_PRI])
         self.action_scale = self.cfg.action_scale
         self.joint_pos = self._agv.data.joint_pos
-        self.joint_vel = self._agv.data.joint_vel 
+        self.joint_vel = self._agv.data.joint_vel
 
         self.episode = 1
 
@@ -213,7 +212,7 @@ class AGVEnv(DirectRLEnv):
                     self.cfg.num_channels,
                 ),
             ),
-            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions*2,)),
+            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions * 13,)),
             critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,)),
         )
 
@@ -247,15 +246,10 @@ class AGVEnv(DirectRLEnv):
             self.num_envs,
         )
 
-        # RL specifics
-        # self.actions = torch.zeros(self.num_envs, self.num_actions, device=self.sim.device)
-
     def _setup_scene(self):
         # print(4)
         self._agv = Articulation(self.cfg.robot_cfg)
         self._niro = RigidObject(self.cfg.niro_cfg)
-        self._rpin = RigidObject(self.cfg.rpin_cfg)
-        self._lpin = RigidObject(self.cfg.lpin_cfg)
         self._agv_contact = ContactSensor(self.cfg.agv_contact_cfg)
         self._niro_contact = ContactSensor(self.cfg.niro_contact_cfg)
         self._rcam = Camera(self.cfg.rcam)
@@ -270,8 +264,6 @@ class AGVEnv(DirectRLEnv):
         # add articultion and sensors to scene
         self.scene.articulations["agv"] = self._agv
         self.scene.rigid_objects["niro"] = self._niro
-        self.scene.rigid_objects["rpin"] = self._rpin
-        self.scene.rigid_objects["lpin"] = self._lpin
         self.scene.sensors["agv_contact"] = self._agv_contact
         self.scene.sensors["niro_contact"] = self._niro_contact
         self.scene.sensors["rcam"] = self._rcam
@@ -295,46 +287,23 @@ class AGVEnv(DirectRLEnv):
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
         self._agv.set_joint_effort_target(self.actions, joint_ids=self.actuated_dof_indices)
-        # self.cur_targets[:, self.actuated_dof_indices] = scale(
-        #     self.actions,
-        #     self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-        #     self.hand_dof_upper_limits[:, self.actuated_dof_indices],
-        # )
-        # self.cur_targets[:, self.actuated_dof_indices] = 0
-        # self.cur_targets[:, self.actuated_dof_indices] = saturate(
-        #     self.cur_targets[:, self.actuated_dof_indices],
-        #     self.hand_dof_lower_limits[:, self.actuated_dof_indices],
-        #     self.hand_dof_upper_limits[:, self.actuated_dof_indices],
-        # )
-
-        # # save current targets
-        # self.prev_targets[:, self.actuated_dof_indices] = self.cur_targets[:, self.actuated_dof_indices]
-
-        # # set targets
-        # self._agv.set_joint_position_target(
-        #     self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
-        # )
 
     def _get_observations(self) -> dict:
         if self.episode == 0:
             self.initial_pin_position()
-        
+
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
-        # tensor = torch.nn.functional.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False).squeeze(0)
 
-        values = torch.cat(
-            (
-                # self.joint_vel[:, self._RR_RPIN_PRI_idx[0]].unsqueeze(dim=1),
-                # self.joint_vel[:, self._PY_PX_PRI_idx[0]].unsqueeze(dim=1),
-                # self.joint_vel[:, self._PZ_PY_PRI_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self.actuated_dof_indices],
-                self.joint_pos[:, self.actuated_dof_indices],
-            ),
-            dim=-1,
-        )
+        # values = torch.cat(
+        #     (
+        #         self.joint_vel[:, self.actuated_dof_indices],
+        #         self.joint_pos[:, self.actuated_dof_indices],
+        #     ),
+        #     dim=-1,
+        # )
 
-        # print(values.shape)
+        values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
         if self.cfg.write_image_to_file:
             array = tensor.squeeze(0).cpu().numpy()
@@ -348,19 +317,14 @@ class AGVEnv(DirectRLEnv):
                 "value": values,
                 "image": (tensor.type(torch.cuda.FloatTensor) / 255.0),
                 "critic": self._get_states(),
-                # "value": values,
-                # "image": (tensor.type(torch.cuda.FloatTensor) / 255.0).view(-1, *self.single_observation_space["policy"].shape).permute(0, 3, 1, 2),
             },
             "critic": self._get_states(),
         }
-        
+
         self.episode += 1
-        # print(1, torch.isnan(observations["policy"]["value"]).any())
-        # print(2, torch.isnan(observations["policy"]["image"]).any())
-        # print(3, torch.isnan(observations["policy"]["critic"]).any())
 
         return observations
-    
+
     def _get_states(self) -> torch.Tensor:
         joint_pos_limits = self._agv.root_physx_view.get_dof_limits().to(self.device)
         dof_lower_limits = joint_pos_limits[..., 0]
@@ -374,26 +338,19 @@ class AGVEnv(DirectRLEnv):
                 unscale(self._agv.data.joint_pos, dof_lower_limits, dof_upper_limits),
                 # DOF velocities (24)
                 vel_obs_scale * self._agv.data.joint_vel,
-                self._agv.data.body_pos_w[:, self.actuated_dof_indices].view(self.num_envs, 3 * 3),
-                # self._agv.data.body_pos_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 3),
-                # self._agv.data.body_quat_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 4),
-                # self._agv.data.body_vel_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 6),
-                # self._agv.data.body_pos_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 3),
-                # self._agv.data.body_quat_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 4),
-                # self._agv.data.body_vel_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 6),
+                # self._agv.data.body_pos_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 3),
+                # self._agv.data.body_quat_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 4),
+                # self._agv.data.body_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
+                # self._agv.data.body_ang_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
+                # self._agv.data.body_ang_acc_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
+                self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13),
                 # applied actions (20)
                 self.actions,
                 # rpin
                 self.pin_position(True) - self.scene.env_origins,
-                self._rpin.data.root_quat_w,
-                self._rpin.data.root_vel_w,
-                self._rpin.data.root_lin_vel_w,
-                self._rpin.data.root_ang_vel_w,
                 # initial values
                 self.init_hole_pos,
                 self.init_pin_pos,
-                # self.init_distance_r,
-                # self.init_distance_l,
             ),
             dim=-1,
         )
@@ -413,13 +370,15 @@ class AGVEnv(DirectRLEnv):
             * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * 1000
         )
-        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() *0.1
+        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.1
 
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
 
-        UP = "\x1B[3A"
-        print(f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r")
+        UP = "\x1b[3A"
+        print(
+            f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+        )
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -529,13 +488,12 @@ class AGVEnv(DirectRLEnv):
         rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
     def pin_position(self, right: bool = True):
-        # self._agv.data.body_pos_w[:,self._RPIN_idx[0],:]
-        pin: RigidObject = self.scene.rigid_objects[f"{'r' if right else 'l'}pin"]
+        root_position: RigidObject = self._agv.data.body_pos_w[:, self._RPIN_idx[0] if right else self._LPIN_idx, :]
         pin_rel = torch.tensor(
             [0, 0.02 if right else -0.02, 0.479],
             device="cuda:0",
         )  # 0.479
-        pin_pos_w = torch.add(pin.data.root_pos_w, pin_rel)
+        pin_pos_w = root_position + pin_rel
         return pin_pos_w
 
     def hole_position(self, right: bool = True):
@@ -622,10 +580,8 @@ class AGVEnv(DirectRLEnv):
         return cosine_similarity
 
     def initial_pin_position(self):
-        r_pin_rel = torch.tensor([0, 0.02, 0.479], device="cuda:0")
-        l_pin_rel = torch.tensor([0, -0.02, 0.479], device="cuda:0")
-        r_pin_pos_w = torch.add(self._agv.data.body_pos_w[:,self._RPIN_idx[0],:], r_pin_rel)
-        l_pin_pos_w = torch.add(self._lpin.data.root_pos_w, l_pin_rel)
+        r_pin_pos_w = self.pin_position(True)
+        l_pin_pos_w = self.pin_position(False)
         l_hole_pos_w = self.hole_position(False)
         r_hole_pos_w = self.hole_position(True)
 
@@ -634,7 +590,7 @@ class AGVEnv(DirectRLEnv):
         self.init_pin_pos = r_pin_pos_w
         self.init_hole_pos = r_hole_pos_w
         self.init_direction = r_hole_pos_w - r_pin_pos_w
-        # print(self.init_distance_r)
+
         r_hole_z = r_hole_pos_w[:, 2]
         r_pin_z = r_pin_pos_w[:, 2]
 
@@ -650,15 +606,17 @@ class AGVEnv(DirectRLEnv):
             "l_pin": l_pin_pos_w,
         }
 
-        marker_locations = torch.vstack((self.init_hole_pos, self.init_pin_pos-torch.tensor([0, 0, 0.5], device="cuda:0")))
+        marker_locations = torch.vstack((
+            self.init_hole_pos,
+            self.init_pin_pos - torch.tensor([0, 0, 0.479], device="cuda:0"),
+        ))
         self.my_visualizer.visualize(marker_locations)
-        # self.init_reset = False
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
         net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
         is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
         return is_contact
-    
+
     def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
         world_transform = xformable.ComputeLocalToWorldTransform(0)
         world_pos = world_transform.ExtractTranslation()
@@ -674,9 +632,11 @@ class AGVEnv(DirectRLEnv):
 
         return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
 
+
 @torch.jit.script
 def scale(x, lower, upper):
     return 0.5 * (x + 1.0) * (upper - lower) + lower
+
 
 @torch.jit.script
 def unscale(x, lower, upper):

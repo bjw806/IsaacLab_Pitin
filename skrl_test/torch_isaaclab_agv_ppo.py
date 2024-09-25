@@ -40,22 +40,26 @@ class Policy(GaussianMixin, Model):
             nn.Flatten(),
         )
         self.net_mlp = nn.Sequential(
-            nn.Linear(6, 128),
+            nn.Linear(39, 16),
             nn.ReLU(),
-            nn.Linear(128, 32),
+            nn.Linear(16, 8),
             nn.ReLU(),
         )
         self.net_hide = nn.Sequential(
-            nn.Linear(36992 + 32, 256),
+            nn.Linear(36992 + 8, 512),
             nn.ReLU(),
-            nn.Linear(256, 32),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 32),
             nn.Tanh(),
             nn.Linear(32, self.num_actions),
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs, role):
-        cnn = self.net_cnn(inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        cnn = self.net_cnn(
+            inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
+        )
         mlp = self.net_mlp(inputs["states"]["value"])
         hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
 
@@ -81,21 +85,25 @@ class Value(DeterministicMixin, Model):
             nn.Flatten(),
         )
         self.net_mlp = nn.Sequential(
-            nn.Linear(6, 128),
+            nn.Linear(39, 16),
             nn.ReLU(),
-            nn.Linear(128, 32),
+            nn.Linear(16, 8),
             nn.ReLU(),
         )
         self.net_hide = nn.Sequential(
-            nn.Linear(36992 + 32, 256),
+            nn.Linear(36992 + 8, 512),
             nn.ReLU(),
-            nn.Linear(256, 32),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 32),
             nn.Tanh(),
             nn.Linear(32, 1),
         )
 
     def compute(self, inputs, role):
-        cnn = self.net_cnn(inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        cnn = self.net_cnn(
+            inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
+        )
         mlp = self.net_mlp(inputs["states"]["value"])
         hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
 

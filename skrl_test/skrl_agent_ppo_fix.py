@@ -403,9 +403,9 @@ class PPO(Agent):
 
                 sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
 
-                value_flat_size = 6
+                value_flat_size = 13
                 image_flat_size = 300 * 300 * 3
-                num_states = 57
+                num_states = 71
                 
                 value_flat = sampled_states[:, :value_flat_size]
                 image_flat = sampled_states[:, value_flat_size:value_flat_size + image_flat_size]
