@@ -403,7 +403,7 @@ class PPO(Agent):
 
                 sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
 
-                value_flat_size = 13
+                value_flat_size = 13 * 3  # action space size
                 image_flat_size = 300 * 300 * 3
                 num_states = 71
                 
