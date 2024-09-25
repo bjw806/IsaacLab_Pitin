@@ -375,10 +375,10 @@ class AGVEnv(DirectRLEnv):
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
 
-        UP = "\x1b[3A"
-        print(
-            f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
-        )
+        # UP = "\x1b[3A"
+        # print(
+        #     f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+        # )
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -559,17 +559,19 @@ class AGVEnv(DirectRLEnv):
         curr_z_dist = hole_z - curr_pin_z
         curr_z_rew = self.init_z_distance_r - curr_z_dist
 
-        prev_pin_z = curr_pin_pos_w[:, 2]
+        prev_pin_z = prev_pin_pos_w[:, 2]
         prev_z_dist = hole_z - prev_pin_z
 
         relative_z_rew = (prev_z_dist - curr_z_dist) * 100
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
+        reward = curr_xy_rew + curr_z_rew*10 + relative_xy_rew + relative_z_rew
 
-        # UP = "\x1b[3A"
-        # print(f"\n___{round(reward[0].item(), 4)}___\n{UP}\r")
+        UP = "\x1b[3A"
+        print(
+            f"\nxy: {round(curr_xy_rew[0].item(), 2)} z: {round(curr_z_rew[0].item()*10, 2)} rxy: {round(relative_xy_rew[0].item(), 2)} rz: {round(relative_z_rew[0].item(), 2)} rew: {round(reward[0].item(), 2)}_\n{UP}\r"
+        )
 
         return reward
 
