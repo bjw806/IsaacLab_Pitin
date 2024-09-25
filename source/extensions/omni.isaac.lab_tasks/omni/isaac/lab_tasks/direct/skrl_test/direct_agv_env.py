@@ -30,10 +30,10 @@ from omni.isaac.lab.utils import configclass
 from PIL import Image
 from pxr import UsdGeom
 
-from .agv_cfg import AGV_CFG, AGV_JOINT
+from .agv_cfg import AGV_CFG, AGV_JOINT, AGVEventCfg
 from omni.isaac.lab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
-
+from omni.isaac.lab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
 def define_markers() -> VisualizationMarkers:
     marker_cfg = VisualizationMarkersCfg(
@@ -64,7 +64,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
     action_scale = 100.0  # [N]
     num_actions = 3
     num_channels = 3
-    num_states = 2
+    num_states = 57
+    # events = AGVEventCfg()
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=dt, render_interval=decimation)
@@ -112,6 +113,19 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/mb_1",
     )
 
+    actuated_joint_names = [
+        # "jlw",
+        # "jrw",
+        # "jz",
+        "jy",
+        "jx",
+        # "jr",
+        # "jlr",
+        # "jrr",
+        # "jlpin",
+        "jrpin",
+    ]
+
     num_observations = num_channels * rcam.height * rcam.width
     write_image_to_file = False
 
@@ -139,16 +153,35 @@ class AGVEnv(DirectRLEnv):
         # self._PR_LR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_LR_REV)
         # self._PR_RR_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.PR_RR_REV)
         # self._LR_LPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.LR_LPIN_PRI)
-        self._RR_RPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.RR_RPIN_PRI)
-        self._XY_PRI_idx, _ = self._agv.find_joints([self.cfg.agv_joint.PZ_PY_PRI, self.cfg.agv_joint.PY_PX_PRI])
+        # self._RR_RPIN_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.RR_RPIN_PRI)
+        self._RPIN_idx, _ = self._agv.find_bodies("rpin_1")
+        # self._XY_PRI_idx, _ = self._agv.find_joints([self.cfg.agv_joint.PZ_PY_PRI, self.cfg.agv_joint.PY_PX_PRI])
         self.action_scale = self.cfg.action_scale
         self.joint_pos = self._agv.data.joint_pos
         self.joint_vel = self._agv.data.joint_vel 
 
-        self.init_reset = True
+        self.episode = 1
 
-        # self.joint_pos = self._agv.data.joint_pos
-        # self.joint_vel = self._agv.data.joint_vel
+        self.num_agv_dofs = self._agv.num_joints
+
+        # # buffers for position targets
+        self.agv_dof_targets = torch.zeros((self.num_envs, self.num_agv_dofs), dtype=torch.float, device=self.device)
+        self.prev_targets = torch.zeros((self.num_envs, self.num_agv_dofs), dtype=torch.float, device=self.device)
+        self.cur_targets = torch.zeros((self.num_envs, self.num_agv_dofs), dtype=torch.float, device=self.device)
+
+        # # list of actuated joints
+        self.actuated_dof_indices = list()
+        for joint_name in cfg.actuated_joint_names:
+            self.actuated_dof_indices.append(self._agv.joint_names.index(joint_name))
+        self.actuated_dof_indices.sort()
+
+        # # joint limits
+        joint_pos_limits = self._agv.root_physx_view.get_dof_limits().to(self.device)
+        self.hand_dof_lower_limits = joint_pos_limits[..., 0]
+        self.hand_dof_upper_limits = joint_pos_limits[..., 1]
+
+        self.joint_pos = self._agv.data.joint_pos
+        self.joint_vel = self._agv.data.joint_vel
 
         if len(self.cfg.rcam.data_types) != 1:
             raise ValueError(
@@ -170,14 +203,18 @@ class AGVEnv(DirectRLEnv):
 
         # set up spaces
         self.single_observation_space = gym.spaces.Dict()
-        self.single_observation_space["policy"] = gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(
-                self.cfg.rcam.height,
-                self.cfg.rcam.width,
-                self.cfg.num_channels,
+        self.single_observation_space["policy"] = gym.spaces.Dict(
+            image=gym.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(
+                    self.cfg.rcam.height,
+                    self.cfg.rcam.width,
+                    self.cfg.num_channels,
+                ),
             ),
+            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions*2,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,)),
         )
 
         if not self.cfg.num_states:
@@ -187,9 +224,10 @@ class AGVEnv(DirectRLEnv):
                 low=-np.inf,
                 high=np.inf,
                 shape=(
-                    self.cfg.rcam.height,
-                    self.cfg.rcam.width,
-                    self.cfg.num_channels,
+                    self.num_states,
+                    # self.cfg.rcam.height,
+                    # self.cfg.rcam.width,
+                    # self.cfg.num_channels,
                 ),
             )
             # shape=(self.num_states,)
@@ -249,13 +287,36 @@ class AGVEnv(DirectRLEnv):
         self.actions = self.action_scale * actions.clone()
 
     def _apply_action(self) -> None:
-        # print(6)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self._XY_PRI_idx + self._RR_RPIN_PRI_idx)
+        if torch.isnan(self.actions).any():
+            raise ValueError("Actions contain NaN values.")
+        # self._agv.set_joint_effort_target(self.actions, joint_ids=self._XY_PRI_idx + self._RR_RPIN_PRI_idx)
+        # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
+        # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PZ_PY_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
+        self._agv.set_joint_effort_target(self.actions, joint_ids=self.actuated_dof_indices)
+        # self.cur_targets[:, self.actuated_dof_indices] = scale(
+        #     self.actions,
+        #     self.hand_dof_lower_limits[:, self.actuated_dof_indices],
+        #     self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+        # )
+        # self.cur_targets[:, self.actuated_dof_indices] = 0
+        # self.cur_targets[:, self.actuated_dof_indices] = saturate(
+        #     self.cur_targets[:, self.actuated_dof_indices],
+        #     self.hand_dof_lower_limits[:, self.actuated_dof_indices],
+        #     self.hand_dof_upper_limits[:, self.actuated_dof_indices],
+        # )
+
+        # # save current targets
+        # self.prev_targets[:, self.actuated_dof_indices] = self.cur_targets[:, self.actuated_dof_indices]
+
+        # # set targets
+        # self._agv.set_joint_position_target(
+        #     self.cur_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
+        # )
 
     def _get_observations(self) -> dict:
-        if self.init_reset:
+        if self.episode == 0:
             self.initial_pin_position()
         
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
@@ -264,11 +325,16 @@ class AGVEnv(DirectRLEnv):
 
         values = torch.cat(
             (
-                self.joint_vel[:, self._RR_RPIN_PRI_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._XY_PRI_idx[0]].unsqueeze(dim=1),
+                # self.joint_vel[:, self._RR_RPIN_PRI_idx[0]].unsqueeze(dim=1),
+                # self.joint_vel[:, self._PY_PX_PRI_idx[0]].unsqueeze(dim=1),
+                # self.joint_vel[:, self._PZ_PY_PRI_idx[0]].unsqueeze(dim=1),
+                self.joint_vel[:, self.actuated_dof_indices],
+                self.joint_pos[:, self.actuated_dof_indices],
             ),
             dim=-1,
         )
+
+        # print(values.shape)
 
         if self.cfg.write_image_to_file:
             array = tensor.squeeze(0).cpu().numpy()
@@ -278,13 +344,20 @@ class AGVEnv(DirectRLEnv):
             image.save("output_image.png")
 
         observations = {
-            "policy": tensor.type(torch.cuda.FloatTensor) / 255.0,
-            # {
-            #     "value": values,
-            #     "image": tensor.type(torch.cuda.FloatTensor) / 255.0,
-            # },
+            "policy": {
+                "value": values,
+                "image": (tensor.type(torch.cuda.FloatTensor) / 255.0),
+                "critic": self._get_states(),
+                # "value": values,
+                # "image": (tensor.type(torch.cuda.FloatTensor) / 255.0).view(-1, *self.single_observation_space["policy"].shape).permute(0, 3, 1, 2),
+            },
             "critic": self._get_states(),
         }
+        
+        self.episode += 1
+        # print(1, torch.isnan(observations["policy"]["value"]).any())
+        # print(2, torch.isnan(observations["policy"]["image"]).any())
+        # print(3, torch.isnan(observations["policy"]["critic"]).any())
 
         return observations
     
@@ -293,7 +366,7 @@ class AGVEnv(DirectRLEnv):
         dof_lower_limits = joint_pos_limits[..., 0]
         dof_upper_limits = joint_pos_limits[..., 1]
         vel_obs_scale = 0.2
-        num_xy_joints = len(self._XY_PRI_idx)
+        # num_xy_joints = len(self._XY_PRI_idx)
 
         states = torch.cat(
             (
@@ -301,9 +374,13 @@ class AGVEnv(DirectRLEnv):
                 unscale(self._agv.data.joint_pos, dof_lower_limits, dof_upper_limits),
                 # DOF velocities (24)
                 vel_obs_scale * self._agv.data.joint_vel,
-                self._agv.data.body_pos_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 3),
-                self._agv.data.body_quat_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 4),
-                self._agv.data.body_vel_w[:, self._XY_PRI_idx].view(self.num_envs, num_xy_joints * 6),
+                self._agv.data.body_pos_w[:, self.actuated_dof_indices].view(self.num_envs, 3 * 3),
+                # self._agv.data.body_pos_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 3),
+                # self._agv.data.body_quat_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 4),
+                # self._agv.data.body_vel_w[:, self._PZ_PY_PRI_idx].view(self.num_envs, 1 * 6),
+                # self._agv.data.body_pos_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 3),
+                # self._agv.data.body_quat_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 4),
+                # self._agv.data.body_vel_w[:, self._PY_PX_PRI_idx].view(self.num_envs, 1 * 6),
                 # applied actions (20)
                 self.actions,
                 # rpin
@@ -321,12 +398,14 @@ class AGVEnv(DirectRLEnv):
             dim=-1,
         )
 
+        # print(states.shape)
+
         return states
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
         rew_pin_r = self.pin_reward(True)
-        correct_rew = self.pin_correct(True).int() * self.init_distance_r * 1000
+        correct_rew = self.pin_correct(True).int() * 1000
 
         # penalty
         z_penalty = (
@@ -334,13 +413,13 @@ class AGVEnv(DirectRLEnv):
             * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * 1000
         )
-        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int()
+        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() *0.1
 
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
 
-        # UP = "\x1B[3A"
-        # print(f"\npin: {round(rew_pin_r.item(), 2)} correct: {round(correct_rew.item(), 2)} z: {round(z_penalty.item(), 2)} contact: {round(contact_penalty.item(), 2)} total: {round(total_reward.item(), 2)}_\n{UP}\r")
+        UP = "\x1B[3A"
+        print(f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r")
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -357,9 +436,16 @@ class AGVEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
 
-        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
+        # self.randomize_joints_by_offset(env_ids, (-0, 0), "agv")
         self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
-        self.init_reset = True
+        self.episode = 0
+
+        # set joint positions with some noise
+        joint_pos, joint_vel = self._agv.data.default_joint_pos.clone(), self._agv.data.default_joint_vel.clone()
+        # joint_pos += torch.rand_like(joint_pos) * 0.1
+        self._agv.write_joint_state_to_sim(joint_pos, joint_vel)
+        # clear internal buffers
+        self._agv.reset()
 
     """
     custom functions
@@ -443,6 +529,7 @@ class AGVEnv(DirectRLEnv):
         rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
     def pin_position(self, right: bool = True):
+        # self._agv.data.body_pos_w[:,self._RPIN_idx[0],:]
         pin: RigidObject = self.scene.rigid_objects[f"{'r' if right else 'l'}pin"]
         pin_rel = torch.tensor(
             [0, 0.02 if right else -0.02, 0.479],
@@ -521,17 +608,23 @@ class AGVEnv(DirectRLEnv):
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        reward = curr_xy_rew * 5 + curr_z_rew * 3 + relative_xy_rew + relative_z_rew
+        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
 
-        UP = "\x1b[3A"
-        print(f"\n___{round(reward[0].item(), 4)}___\n{UP}\r")
+        # UP = "\x1b[3A"
+        # print(f"\n___{round(reward[0].item(), 4)}___\n{UP}\r")
 
         return reward
+
+    def pin_direction_reward(self, hole, pin) -> torch.Tensor:
+        current_direction = pin - hole
+        current_direction = current_direction / torch.norm(current_direction, p=2)
+        cosine_similarity = torch.dot(current_direction, self.init_direction)
+        return cosine_similarity
 
     def initial_pin_position(self):
         r_pin_rel = torch.tensor([0, 0.02, 0.479], device="cuda:0")
         l_pin_rel = torch.tensor([0, -0.02, 0.479], device="cuda:0")
-        r_pin_pos_w = torch.add(self._rpin.data.root_pos_w, r_pin_rel)
+        r_pin_pos_w = torch.add(self._agv.data.body_pos_w[:,self._RPIN_idx[0],:], r_pin_rel)
         l_pin_pos_w = torch.add(self._lpin.data.root_pos_w, l_pin_rel)
         l_hole_pos_w = self.hole_position(False)
         r_hole_pos_w = self.hole_position(True)
@@ -540,7 +633,8 @@ class AGVEnv(DirectRLEnv):
         self.init_distance_r = self.euclidean_distance(r_pin_pos_w, r_hole_pos_w)
         self.init_pin_pos = r_pin_pos_w
         self.init_hole_pos = r_hole_pos_w
-
+        self.init_direction = r_hole_pos_w - r_pin_pos_w
+        # print(self.init_distance_r)
         r_hole_z = r_hole_pos_w[:, 2]
         r_pin_z = r_pin_pos_w[:, 2]
 
@@ -556,9 +650,9 @@ class AGVEnv(DirectRLEnv):
             "l_pin": l_pin_pos_w,
         }
 
-        # marker_locations = torch.vstack((self.init_hole_pos, self.init_pin_pos))
-        # self.my_visualizer.visualize(marker_locations)
-        self.init_reset = False
+        marker_locations = torch.vstack((self.init_hole_pos, self.init_pin_pos-torch.tensor([0, 0, 0.5], device="cuda:0")))
+        self.my_visualizer.visualize(marker_locations)
+        # self.init_reset = False
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
         net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
@@ -579,6 +673,10 @@ class AGVEnv(DirectRLEnv):
         qw = world_quat.real
 
         return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+
+@torch.jit.script
+def scale(x, lower, upper):
+    return 0.5 * (x + 1.0) * (upper - lower) + lower
 
 @torch.jit.script
 def unscale(x, lower, upper):

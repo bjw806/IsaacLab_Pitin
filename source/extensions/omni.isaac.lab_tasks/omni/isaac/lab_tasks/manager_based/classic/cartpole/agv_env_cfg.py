@@ -283,8 +283,8 @@ def l_cam_rgb(env: ManagerBasedEnv):
 
 def r_cam_rgb(env: ManagerBasedEnv):
     camera: Camera = env.scene["rcam"]
-    observations = camera.data.output["rgb"].clone()
-    rgb = observations[:, :, :, :3]  # .flatten(start_dim=1)
+    observations = camera.data.output["rgb"].clone()[:, :, :, :3]
+    rgb = (observations.type(torch.cuda.FloatTensor)/255.0)#.view(1, -1)  # .flatten(start_dim=1)
     # grayscale = (0.2989 * rgb[:, :, :, 0] + 
     #              0.5870 * rgb[:, :, :, 1] + 
     #              0.1140 * rgb[:, :, :, 2])
@@ -307,7 +307,7 @@ class ObservationsCfg:
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
-            self.concatenate_terms = False
+            self.concatenate_terms = True
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()

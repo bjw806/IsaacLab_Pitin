@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 # import the skrl components to build the RL system
-from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
+from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -30,29 +30,37 @@ class Policy(GaussianMixin, Model):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
-        self.net = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=8, stride=4),  # (512x512) -> (127x127)
+        self.net_cnn = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),  # (127x127) -> (62x62)
+            nn.Conv2d(16, 32, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
+            nn.Conv2d(32, 32, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(82944, 512),  # 9216 / 230400
+        )
+        self.net_mlp = nn.Sequential(
+            nn.Linear(6, 128),
             nn.ReLU(),
-            nn.Linear(512, 16),
-            nn.Tanh(),
-            nn.Linear(16, 64),
-            nn.Tanh(),
-            nn.Linear(64, 32),
+            nn.Linear(128, 32),
+            nn.ReLU(),
+        )
+        self.net_hide = nn.Sequential(
+            nn.Linear(36992 + 32, 256),
+            nn.ReLU(),
+            nn.Linear(256, 32),
             nn.Tanh(),
             nn.Linear(32, self.num_actions),
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs, role):
+        cnn = self.net_cnn(inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        mlp = self.net_mlp(inputs["states"]["value"])
+        hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
+
         return (
-            self.net(inputs["states"].view(-1, *self.observation_space.shape).permute(0, 3, 1, 2)),
+            hide,
             self.log_std_parameter,
             {},
         )
@@ -63,28 +71,38 @@ class Value(DeterministicMixin, Model):
         Model.__init__(self, observation_space, action_space, device)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.net = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=8, stride=4),  # (512x512) -> (127x127)
+        self.net_cnn = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),  # (127x127) -> (62x62)
+            nn.Conv2d(16, 32, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),  # (62x62) -> (60x60)
+            nn.Conv2d(32, 32, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(82944, 512),  # 9216 / 230400
+        )
+        self.net_mlp = nn.Sequential(
+            nn.Linear(6, 128),
             nn.ReLU(),
-            nn.Linear(512, 16),
-            nn.Tanh(),
-            nn.Linear(16, 64),
-            nn.Tanh(),
-            nn.Linear(64, 32),
+            nn.Linear(128, 32),
+            nn.ReLU(),
+        )
+        self.net_hide = nn.Sequential(
+            nn.Linear(36992 + 32, 256),
+            nn.ReLU(),
+            nn.Linear(256, 32),
             nn.Tanh(),
             nn.Linear(32, 1),
         )
 
     def compute(self, inputs, role):
-        x = self.net(inputs["states"].view(-1, *self.observation_space.shape).permute(0, 3, 1, 2))
-        return x, {}
+        cnn = self.net_cnn(inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        mlp = self.net_mlp(inputs["states"]["value"])
+        hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
+
+        return (
+            hide,
+            {},
+        )
 
 
 # load and wrap the environment
