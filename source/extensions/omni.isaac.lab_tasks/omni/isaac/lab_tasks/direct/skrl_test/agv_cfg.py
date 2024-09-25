@@ -1,6 +1,12 @@
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.actuators import ImplicitActuatorCfg
 from omni.isaac.lab.assets import ArticulationCfg
+import omni.isaac.lab.envs.mdp as mdp
+import omni.isaac.lab.sim as sim_utils
+from omni.isaac.lab.assets import ArticulationCfg
+from omni.isaac.lab.managers import EventTermCfg as EventTerm
+from omni.isaac.lab.managers import SceneEntityCfg
+from omni.isaac.lab.utils import configclass
 
 
 class AGV_JOINT:
@@ -61,7 +67,7 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
         ),
         "xyz_actuator": ImplicitActuatorCfg(
             joint_names_expr=[
-                # AGV_JOINT.MB_PZ_PRI,
+                AGV_JOINT.MB_PZ_PRI,
                 AGV_JOINT.PZ_PY_PRI,
                 AGV_JOINT.PY_PX_PRI,
             ],
@@ -86,13 +92,67 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
         ),
         "pin_pri_actuator": ImplicitActuatorCfg(
             joint_names_expr=[
-                # AGV_JOINT.LR_LPIN_PRI,
+                AGV_JOINT.LR_LPIN_PRI,
                 AGV_JOINT.RR_RPIN_PRI
             ],
-            effort_limit=100.0,
-            velocity_limit=50.0,
+            effort_limit=2.0,
+            velocity_limit=1.0,
             stiffness=100.0,
             damping=100.0,
         ),
     },
 )
+
+
+@configclass
+class AGVEventCfg:
+    """Configuration for randomization."""
+
+    reset_xyz_position = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "agv",
+                joint_names=[
+                    # AGV_JOINT.MB_PZ_PRI,
+                    AGV_JOINT.PZ_PY_PRI,
+                    AGV_JOINT.PY_PX_PRI,
+                ]
+            ),
+            # "position_range": (-0.00, 0.00),
+            "position_range": (0, 0),
+            "velocity_range": (0, 0),
+        },
+    )
+
+    reset_pin_position = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "agv",
+                joint_names=[
+                    # AGV_JOINT.LR_LPIN_PRI,
+                    AGV_JOINT.RR_RPIN_PRI,
+                ]
+            ),
+            "position_range": (0, 0),
+            "velocity_range": (0, 0),
+        },
+    )
+
+    # reset_niro_position = EventTerm(
+    #     func=randomize_object_position,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("niro"),
+    #         "xy_position_range": (-0.05, 0.05),
+    #         "z_position_range": (-0.03, 0.03)
+    #     },
+    # )
+
+    # init_position = EventTerm(
+    #     func=initial_pin_position,
+    #     mode="reset",
+    # )
