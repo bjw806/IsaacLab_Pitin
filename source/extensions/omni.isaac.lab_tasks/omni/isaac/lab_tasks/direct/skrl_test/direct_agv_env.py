@@ -63,7 +63,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     action_scale = 100.0  # [N]
     num_actions = 3
     num_channels = 3
-    num_states = 71
+    num_states = 63
     # events = AGVEventCfg()
 
     # simulation
@@ -77,8 +77,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=300,
-        height=300,
+        width=440,
+        height=440,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -326,35 +326,32 @@ class AGVEnv(DirectRLEnv):
         return observations
 
     def _get_states(self) -> torch.Tensor:
-        joint_pos_limits = self._agv.root_physx_view.get_dof_limits().to(self.device)
-        dof_lower_limits = joint_pos_limits[..., 0]
-        dof_upper_limits = joint_pos_limits[..., 1]
-        vel_obs_scale = 0.2
-        # num_xy_joints = len(self._XY_PRI_idx)
-
         states = torch.cat(
             (
-                # DOF positions (24)
-                unscale(self._agv.data.joint_pos, dof_lower_limits, dof_upper_limits),
-                # DOF velocities (24)
-                vel_obs_scale * self._agv.data.joint_vel,
                 # self._agv.data.body_pos_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 3),
                 # self._agv.data.body_quat_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 4),
                 # self._agv.data.body_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
                 # self._agv.data.body_ang_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
                 # self._agv.data.body_ang_acc_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
                 self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13),
-                # applied actions (20)
+                # niro
+                self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
+                # applied actions (3)
                 self.actions,
-                # rpin
+                # pin
                 self.pin_position(True) - self.scene.env_origins,
+                self.pin_position(False) - self.scene.env_origins,
+                # # hole
+                self.hole_position(True) - self.scene.env_origins,
+                self.hole_position(False) - self.scene.env_origins,
                 # initial values
-                self.init_hole_pos,
-                self.init_pin_pos,
+                self.init_hole_pos - self.scene.env_origins,
+                self.init_pin_pos - self.scene.env_origins,
             ),
             dim=-1,
         )
-
+        
+        # states = torch.where(torch.isinf(states), torch.tensor(-1.0), states)
         # print(states.shape)
 
         return states
@@ -395,16 +392,16 @@ class AGVEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
 
-        # self.randomize_joints_by_offset(env_ids, (-0, 0), "agv")
+        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
         self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
         self.episode = 0
 
         # set joint positions with some noise
-        joint_pos, joint_vel = self._agv.data.default_joint_pos.clone(), self._agv.data.default_joint_vel.clone()
+        # joint_pos, joint_vel = self._agv.data.default_joint_pos.clone(), self._agv.data.default_joint_vel.clone()
         # joint_pos += torch.rand_like(joint_pos) * 0.1
-        self._agv.write_joint_state_to_sim(joint_pos, joint_vel)
+        # self._agv.write_joint_state_to_sim(joint_pos, joint_vel)
         # clear internal buffers
-        self._agv.reset()
+        # self._agv.reset()
 
     """
     custom functions
@@ -488,7 +485,7 @@ class AGVEnv(DirectRLEnv):
         rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
     def pin_position(self, right: bool = True):
-        root_position: RigidObject = self._agv.data.body_pos_w[:, self._RPIN_idx[0] if right else self._LPIN_idx, :]
+        root_position: RigidObject = self._agv.data.body_pos_w[:, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
         pin_rel = torch.tensor(
             [0, 0.02 if right else -0.02, 0.479],
             device="cuda:0",
@@ -516,24 +513,24 @@ class AGVEnv(DirectRLEnv):
         # l_pin_pos_w = pin_positions(env, False)
         r_pin_pos_w = self.pin_position(True)
 
-        r_hole_y = r_hole_pos_w[:, 1]
-        r_pin_y = r_pin_pos_w[:, 1]
+        r_hole_xy = r_hole_pos_w[:, :1]
+        r_pin_xy = r_pin_pos_w[:, :1]
 
         r_hole_z = r_hole_pos_w[:, 2]
         r_pin_z = r_pin_pos_w[:, 2]
 
         z_condition = r_pin_z >= r_hole_z
 
-        y_distance = torch.abs(r_hole_y - r_pin_y)
-        y_condition = y_distance >= 0.01
+        xy_distance = self.euclidean_distance(r_hole_xy, r_pin_xy)
+        xy_condition = xy_distance >= 0.01
 
-        return torch.logical_and(z_condition, y_condition)
+        return torch.logical_and(z_condition, xy_condition)
 
     def pin_correct(self, right: bool = True):
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
         distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
-        return distance < 0.005
+        return distance < 0.01
 
     def euclidean_distance(self, src, dist):
         distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=1))
@@ -547,30 +544,29 @@ class AGVEnv(DirectRLEnv):
         hole_xy = hole_pos_w[:, 0:1]
         curr_pin_xy = curr_pin_pos_w[:, 0:1]
         curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
-        curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
+        curr_xy_rew = (self.init_xy_distance_r - curr_xy_distance)**3
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
         prev_xy_distance = self.euclidean_distance(hole_xy, prev_pin_xy)
 
-        relative_xy_rew = (prev_xy_distance - curr_xy_distance) * 100
+        relative_xy_rew = (prev_xy_distance - curr_xy_distance)
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
         curr_z_dist = hole_z - curr_pin_z
-        curr_z_rew = self.init_z_distance_r - curr_z_dist
+        curr_z_rew = (self.init_z_distance_r - curr_z_dist)**3
 
         prev_pin_z = prev_pin_pos_w[:, 2]
         prev_z_dist = hole_z - prev_pin_z
 
-        relative_z_rew = (prev_z_dist - curr_z_dist) * 100
-
+        relative_z_rew = (prev_z_dist - curr_z_dist)*0.3
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
 
-        reward = curr_xy_rew + curr_z_rew*10 + relative_xy_rew + relative_z_rew
+        reward = curr_xy_rew + curr_z_rew# + relative_xy_rew + relative_z_rew
 
         UP = "\x1b[3A"
-        print(
-            f"\nxy: {round(curr_xy_rew[0].item(), 2)} z: {round(curr_z_rew[0].item()*10, 2)} rxy: {round(relative_xy_rew[0].item(), 2)} rz: {round(relative_z_rew[0].item(), 2)} rew: {round(reward[0].item(), 2)}_\n{UP}\r"
+        print( #rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
+            f"\nxy: {curr_xy_rew[0]} z: {curr_z_rew[0]}  rew: {round(reward[0].item(), 3)}_\n{UP}\r"
         )
 
         return reward

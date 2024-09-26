@@ -9,6 +9,7 @@ from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
+from torch.cuda.amp import autocast
 
 # seed for reproducibility
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
@@ -32,26 +33,31 @@ class Policy(GaussianMixin, Model):
 
         self.net_cnn = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=8, stride=4),
-            nn.ReLU(),
+            nn.Mish(),
+            nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(16, 32, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, stride=1),
-            nn.ReLU(),
+            nn.Mish(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1),
+            nn.Mish(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.Mish(),
+            nn.MaxPool2d(kernel_size=2),
             nn.Flatten(),
         )
         self.net_mlp = nn.Sequential(
-            nn.Linear(39, 16),
-            nn.ReLU(),
-            nn.Linear(16, 8),
-            nn.ReLU(),
+            nn.Linear(39, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, 16),
         )
         self.net_hide = nn.Sequential(
-            nn.Linear(36992 + 8, 512),
-            nn.ReLU(),
+            nn.Linear(7744 + 16, 512),
+            nn.GELU(),
             nn.Linear(512, 128),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(128, 32),
-            nn.Tanh(),
+            nn.GELU(),
             nn.Linear(32, self.num_actions),
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
@@ -62,6 +68,21 @@ class Policy(GaussianMixin, Model):
         )
         mlp = self.net_mlp(inputs["states"]["value"])
         hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
+
+        if torch.isnan(hide).any():
+            raise ValueError("hide")
+        # print(hide)
+        """
+        LeakyRelu
+        tensor([[-8.8203,  7.1914,  0.9116]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.0391,  7.1602,  0.8994]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.0391,  7.1133,  0.8794]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.0703,  6.9336,  0.8677]], device='cuda:0', dtype=torch.float16)
+        tensor([[-8.9844,  7.1289,  0.9390]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.1484,  7.0156,  0.8950]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.0469,  7.0820,  0.9312]], device='cuda:0', dtype=torch.float16)
+        tensor([[-9.0547,  7.0898,  0.9067]], device='cuda:0', dtype=torch.float16)
+        """
 
         return (
             hide,
@@ -75,40 +96,24 @@ class Value(DeterministicMixin, Model):
         Model.__init__(self, observation_space, action_space, device)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.net_cnn = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, stride=1),
-            nn.ReLU(),
-            nn.Flatten(),
-        )
         self.net_mlp = nn.Sequential(
-            nn.Linear(39, 16),
-            nn.ReLU(),
-            nn.Linear(16, 8),
-            nn.ReLU(),
-        )
-        self.net_hide = nn.Sequential(
-            nn.Linear(36992 + 8, 512),
-            nn.ReLU(),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Linear(128, 32),
-            nn.Tanh(),
+            nn.Linear(63, 256),
+            nn.GELU(),
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
             nn.Linear(32, 1),
         )
 
     def compute(self, inputs, role):
-        cnn = self.net_cnn(
-            inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
-        )
-        mlp = self.net_mlp(inputs["states"]["value"])
-        hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
-
+        mlp = self.net_mlp(inputs["states"]["critic"])
+        if torch.isnan(mlp).any():
+            raise ValueError("mlp")
         return (
-            hide,
+            mlp,
             {},
         )
 
@@ -141,8 +146,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = rollouts
-cfg["learning_epochs"] = 16
-cfg["mini_batches"] = 64
+cfg["learning_epochs"] = 1024
+cfg["mini_batches"] = 512
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4
@@ -172,10 +177,12 @@ agent = PPO(
     device=device,
 )
 
+# agent.load("./runs/torch/AGV/24-09-25_17-12-11-556727_PPO/checkpoints/agent_100000.pt")
 
 # configure and instantiate the RL trainer
 cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # start training
-trainer.train()
+with autocast():
+    trainer.train()

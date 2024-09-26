@@ -389,7 +389,6 @@ class PPO(Agent):
 
         # sample mini-batches from memory
         sampled_batches = self.memory.sample_all(names=self._tensors_names, mini_batches=self._mini_batches)
-
         cumulative_policy_loss = 0
         cumulative_entropy_loss = 0
         cumulative_value_loss = 0
@@ -403,9 +402,11 @@ class PPO(Agent):
 
                 sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
 
+
                 value_flat_size = 13 * 3  # action space size
-                image_flat_size = 300 * 300 * 3
-                num_states = 71
+                image_size = 440
+                image_flat_size = image_size * image_size * 3
+                num_states = 63
                 
                 value_flat = sampled_states[:, :value_flat_size]
                 image_flat = sampled_states[:, value_flat_size:value_flat_size + image_flat_size]
@@ -415,7 +416,7 @@ class PPO(Agent):
 
                 sampled_states = {
                     'value': value_flat.view(channel_size, value_flat_size),
-                    'image': image_flat.view(channel_size, 300, 300, 3),
+                    'image': image_flat.view(channel_size, image_size, image_size, 3),
                     'critic': critic_flat.view(channel_size, num_states),
                 }
 
