@@ -1,7 +1,9 @@
+import random
 from collections.abc import Sequence
 
 import gymnasium as gym
 import numpy as np
+import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
@@ -29,7 +31,7 @@ from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from PIL import Image
-from pxr import UsdGeom
+from pxr import Gf, UsdGeom
 
 from .agv_cfg import AGV_CFG, AGV_JOINT
 
@@ -350,7 +352,7 @@ class AGVEnv(DirectRLEnv):
             ),
             dim=-1,
         )
-        
+
         # states = torch.where(torch.isinf(states), torch.tensor(-1.0), states)
         # print(states.shape)
 
@@ -393,7 +395,7 @@ class AGVEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
-        self.randomize_object_position(env_ids, (-0.3, 0.3), (-0.03, 0.03), "niro")
+        self.randomize_object_position(env_ids, (-0.1, 0.1), (-0.03, 0.03), "niro")
         self.episode = 0
 
         # set joint positions with some noise
@@ -410,16 +412,19 @@ class AGVEnv(DirectRLEnv):
         # materials = torch.zeros_like(materials[env_ids])
         # self._agv.root_physx_view.set_material_properties(materials, env_ids)
 
-        # import omni.isaac.core.utils.stage as stage_utils
-        # from pxr import UsdShade, Gf
-        # stage = stage_utils.get_current_stage()
-        # prim = stage.GetPrimAtPath(f"/World/envs/env_{env_ids[0]}/AGV/Looks/OmniSurface")
-        # material = UsdShade.Material(prim)
-        # diffuse_color_attr = material.GetInput('mdl:surface')
+        object_names = ["AGV", "Niro"]
+        material_names = ["OmniSurfaceLite", "material_silver"]
+        property_names = [
+            "Shader.inputs:diffuse_reflection_color",
+            "Shader.inputs:diffuse_color_constant",
+        ]
+        stage = stage_utils.get_current_stage()
 
-        # new_color = Gf.Vec3f(0.0, 1.0, 0.0)  # 빨간색
-
-        # diffuse_color_attr.Set(new_color)
+        for idx, object_name in enumerate(object_names):
+            for env_id in env_ids:
+                random_color = Gf.Vec3f(random.random(), random.random(), random.random())
+                color_spec = stage.GetAttributeAtPath(f"/World/envs/env_{env_id}/{object_name}/Looks/{material_names[idx]}/{property_names[idx]}")
+                color_spec.Set(random_color)
 
     """
     custom functions
@@ -580,7 +585,7 @@ class AGVEnv(DirectRLEnv):
         niro color
         pin color
         """
-        
+
         hole_pos_w = self.hole_position(right)
         curr_pin_pos_w = self.pin_position(right)
         prev_pin_pos_w = self.prev_pos_w[f"{'r' if right else 'l'}_pin"]
@@ -588,28 +593,27 @@ class AGVEnv(DirectRLEnv):
         hole_xy = hole_pos_w[:, 0:1]
         curr_pin_xy = curr_pin_pos_w[:, 0:1]
         curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
-        curr_xy_rew = (self.init_xy_distance_r - curr_xy_distance)
+        curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
         prev_xy_distance = self.euclidean_distance(hole_xy, prev_pin_xy)
-        relative_xy_rew = (prev_xy_distance - curr_xy_distance)
+        relative_xy_rew = prev_xy_distance - curr_xy_distance
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
         curr_z_dist = hole_z - curr_pin_z
-        curr_z_rew = (self.init_z_distance_r - curr_z_dist)
+        curr_z_rew = self.init_z_distance_r - curr_z_dist
 
         prev_pin_z = prev_pin_pos_w[:, 2]
         prev_z_dist = hole_z - prev_pin_z
-        relative_z_rew = (prev_z_dist - curr_z_dist)
-
+        relative_z_rew = prev_z_dist - curr_z_dist
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
         reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
 
         UP = "\x1b[3A"
-        print( #xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
-            f"\nrew: {reward[0].item(), 4}_\n{UP}\r"
+        print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
+            f"\nrew: {round(reward[0].item(), 4)}_\n{UP}\r"
         )
 
         return reward
@@ -647,10 +651,12 @@ class AGVEnv(DirectRLEnv):
             "l_pin": l_pin_pos_w,
         }
 
-        marker_locations = torch.vstack((
-            self.init_hole_pos,
-            self.init_pin_pos - torch.tensor([0, 0, 0.479], device="cuda:0"),
-        ))
+        marker_locations = torch.vstack(
+            (
+                self.init_hole_pos,
+                self.init_pin_pos - torch.tensor([0, 0, 0.479], device="cuda:0"),
+            )
+        )
         self.my_visualizer.visualize(marker_locations)
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
