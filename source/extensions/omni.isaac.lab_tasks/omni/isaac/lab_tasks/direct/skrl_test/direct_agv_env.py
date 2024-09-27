@@ -361,13 +361,13 @@ class AGVEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # reward
         rew_pin_r = self.pin_reward(True)
-        correct_rew = self.pin_correct(True).int() * 1000
+        correct_rew = self.pin_correct(True).int() * 100
 
         # penalty
         z_penalty = (
             -self.terminate_z().int()
-            * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
-            * 1000
+            # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
+            * 10
         )
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.1
 
@@ -404,13 +404,6 @@ class AGVEnv(DirectRLEnv):
         # self._agv.write_joint_state_to_sim(joint_pos, joint_vel)
         # clear internal buffers
         # self._agv.reset()
-
-        # materials = self._agv.root_physx_view.get_material_properties()
-        # ni = self._niro.root_physx_view.get_material_properties()
-        # print(ni)
-        # print(mat_props)
-        # materials = torch.zeros_like(materials[env_ids])
-        # self._agv.root_physx_view.set_material_properties(materials, env_ids)
 
         object_names = ["AGV", "Niro"]
         material_names = ["OmniSurfaceLite", "material_silver"]
