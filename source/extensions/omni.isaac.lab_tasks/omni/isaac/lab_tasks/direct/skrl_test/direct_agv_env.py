@@ -393,7 +393,7 @@ class AGVEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
-        self.randomize_object_position(env_ids, (-0.05, 0.05), (-0.03, 0.03), "niro")
+        self.randomize_object_position(env_ids, (-0.3, 0.3), (-0.03, 0.03), "niro")
         self.episode = 0
 
         # set joint positions with some noise
@@ -402,6 +402,24 @@ class AGVEnv(DirectRLEnv):
         # self._agv.write_joint_state_to_sim(joint_pos, joint_vel)
         # clear internal buffers
         # self._agv.reset()
+
+        # materials = self._agv.root_physx_view.get_material_properties()
+        # ni = self._niro.root_physx_view.get_material_properties()
+        # print(ni)
+        # print(mat_props)
+        # materials = torch.zeros_like(materials[env_ids])
+        # self._agv.root_physx_view.set_material_properties(materials, env_ids)
+
+        # import omni.isaac.core.utils.stage as stage_utils
+        # from pxr import UsdShade, Gf
+        # stage = stage_utils.get_current_stage()
+        # prim = stage.GetPrimAtPath(f"/World/envs/env_{env_ids[0]}/AGV/Looks/OmniSurface")
+        # material = UsdShade.Material(prim)
+        # diffuse_color_attr = material.GetInput('mdl:surface')
+
+        # new_color = Gf.Vec3f(0.0, 1.0, 0.0)  # 빨간색
+
+        # diffuse_color_attr.Set(new_color)
 
     """
     custom functions
@@ -533,10 +551,36 @@ class AGVEnv(DirectRLEnv):
         return distance < 0.01
 
     def euclidean_distance(self, src, dist):
-        distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=1))
+        distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=1) + 1e-8)
         return distance
 
     def pin_reward(self, right: bool = True) -> torch.Tensor:
+        """
+        [보상]
+        XYZ 좌표의 일치: 처음 거리 * w
+
+        XY 좌표의 일치: 처음 XY거리 * w
+        Z 좌표의 일치: 처음 Z거리 * w
+
+        [변수]
+
+        전 프레임 대비 상대적 XY 좌표의 변화: (prev_xy_distance - curr_xy_distance) * w
+        전 프레임 대비 상대적 Z 좌표의 변화: (prev_z_distance - curr_z_distance) * w
+
+        [패널티]
+        niro contact
+        Z 좌표 실패
+
+        [초기화]
+        z좌표 실패
+        XYZ 일치
+        Out-of-bounds?
+
+        [Randomize]
+        niro color
+        pin color
+        """
+        
         hole_pos_w = self.hole_position(right)
         curr_pin_pos_w = self.pin_position(right)
         prev_pin_pos_w = self.prev_pos_w[f"{'r' if right else 'l'}_pin"]
@@ -544,29 +588,28 @@ class AGVEnv(DirectRLEnv):
         hole_xy = hole_pos_w[:, 0:1]
         curr_pin_xy = curr_pin_pos_w[:, 0:1]
         curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
-        curr_xy_rew = (self.init_xy_distance_r - curr_xy_distance)**3
+        curr_xy_rew = (self.init_xy_distance_r - curr_xy_distance)
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
         prev_xy_distance = self.euclidean_distance(hole_xy, prev_pin_xy)
-
         relative_xy_rew = (prev_xy_distance - curr_xy_distance)
 
         hole_z = hole_pos_w[:, 2]
         curr_pin_z = curr_pin_pos_w[:, 2]
         curr_z_dist = hole_z - curr_pin_z
-        curr_z_rew = (self.init_z_distance_r - curr_z_dist)**3
+        curr_z_rew = (self.init_z_distance_r - curr_z_dist)
 
         prev_pin_z = prev_pin_pos_w[:, 2]
         prev_z_dist = hole_z - prev_pin_z
+        relative_z_rew = (prev_z_dist - curr_z_dist)
 
-        relative_z_rew = (prev_z_dist - curr_z_dist)*0.3
+
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
-
-        reward = curr_xy_rew + curr_z_rew# + relative_xy_rew + relative_z_rew
+        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew
 
         UP = "\x1b[3A"
-        print( #rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
-            f"\nxy: {curr_xy_rew[0]} z: {curr_z_rew[0]}  rew: {round(reward[0].item(), 3)}_\n{UP}\r"
+        print( #xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
+            f"\nrew: {reward[0].item(), 4}_\n{UP}\r"
         )
 
         return reward
