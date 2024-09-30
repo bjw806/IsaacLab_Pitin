@@ -9,6 +9,7 @@ from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
+from skrl.utils.spaces.torch import unflatten_tensorized_space
 from torch.cuda.amp import autocast
 
 # seed for reproducibility
@@ -35,13 +36,15 @@ class Policy(GaussianMixin, Model):
             nn.Conv2d(3, 16, kernel_size=8, stride=4),
             nn.Mish(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(16, 32, kernel_size=4, stride=2),
-            nn.Mish(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1),
-            nn.Mish(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.Conv2d(16, 32, kernel_size=5, stride=2),
             nn.Mish(),
             nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1),
+            nn.Mish(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1),
+            nn.Mish(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Tanh(),
             nn.Flatten(),
         )
         self.net_mlp = nn.Sequential(
@@ -52,7 +55,7 @@ class Policy(GaussianMixin, Model):
             nn.Linear(32, 16),
         )
         self.net_hide = nn.Sequential(
-            nn.Linear(7744 + 16, 512),
+            nn.Linear(2048 + 16, 512),
             nn.GELU(),
             nn.Linear(512, 128),
             nn.GELU(),
@@ -63,10 +66,9 @@ class Policy(GaussianMixin, Model):
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs, role):
-        cnn = self.net_cnn(
-            inputs["states"]["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
-        )
-        mlp = self.net_mlp(inputs["states"]["value"])
+        states = unflatten_tensorized_space(self.observation_space, inputs["states"])
+        cnn = self.net_cnn(states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        mlp = self.net_mlp(states["value"])
         hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
 
         if torch.isnan(hide).any():
@@ -109,7 +111,8 @@ class Value(DeterministicMixin, Model):
         )
 
     def compute(self, inputs, role):
-        mlp = self.net_mlp(inputs["states"]["critic"])
+        states = unflatten_tensorized_space(self.observation_space, inputs["states"])
+        mlp = self.net_mlp(states["critic"])
         if torch.isnan(mlp).any():
             raise ValueError("mlp")
         return (
@@ -146,7 +149,7 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = rollouts
-cfg["learning_epochs"] = 1024
+cfg["learning_epochs"] = 32
 cfg["mini_batches"] = 512
 cfg["discount_factor"] = 0.9995
 cfg["lambda"] = 0.95
