@@ -7,6 +7,7 @@ import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
+import torch.nn.functional as F
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -43,7 +44,7 @@ def define_markers() -> VisualizationMarkers:
         markers={
             "frame": sim_utils.UsdFileCfg(
                 usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
-                scale=(0.05, 0.05, 0.05),
+                scale=(0.02, 0.02, 0.02),
             ),
         },
     )
@@ -315,6 +316,11 @@ class AGVEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
+        # mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
+        # image -= mean_tensor
+
+        image = tensor / 255
+        # image = F.interpolate(tensor.permute(0, 3, 1, 2), size=(224, 224), mode='bicubic', align_corners=False)
 
         # values = torch.cat(
         #     (
@@ -327,16 +333,15 @@ class AGVEnv(DirectRLEnv):
         values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
         if self.cfg.write_image_to_file:
-            array = tensor.squeeze(0).cpu().numpy()
-            array = (array - array.min()) / (array.max() - array.min()) * 255
-            array = array.astype("uint8")  # Convert to uint8 data type
-            image = Image.fromarray(array)
-            image.save("output_image.png")
+            import torchvision.transforms as transforms
+            to_pil = transforms.ToPILImage()
+            pil_image = to_pil(image.squeeze(0).cpu())
+            pil_image.save("output_image.png")
 
         observations = {
             "policy": {
                 "value": values,
-                "image": (tensor.type(torch.cuda.FloatTensor) / 255.0),
+                "image": image,
                 "critic": self._get_states(),
             },
             "critic": self._get_states(),
@@ -384,12 +389,12 @@ class AGVEnv(DirectRLEnv):
         z_penalty = (
             -self.terminate_z().int()
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
-            * 10
+            * 100
         )
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.1
 
         # sum
-        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty
+        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + 0.1
 
         # UP = "\x1b[3A"
         # print(
@@ -632,7 +637,7 @@ class AGVEnv(DirectRLEnv):
         rew = dist + dist2 - self.init_distance_r
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
-        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew - rew*2
+        reward = curr_xy_rew + curr_z_rew - rew
 
         UP = "\x1b[3A"
         print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
@@ -683,7 +688,7 @@ class AGVEnv(DirectRLEnv):
         marker_locations = torch.vstack(
             (
                 self.init_hole_pos,
-                self.init_pin_pos - torch.tensor([0, 0, 0.479], device="cuda:0"),
+                self.init_pin_pos# - torch.tensor([0, 0, 0.479], device="cuda:0"),
             )
         )
         self.my_visualizer.visualize(marker_locations)

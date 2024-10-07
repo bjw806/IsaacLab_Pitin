@@ -34,33 +34,34 @@ class Policy(GaussianMixin, Model):
 
         self.net_cnn = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=8, stride=4),
-            nn.Mish(),
+            nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(16, 32, kernel_size=5, stride=2),
-            nn.Mish(),
+            nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(32, 64, kernel_size=3, stride=1),
-            nn.Mish(),
+            nn.ReLU(),
             nn.Conv2d(64, 128, kernel_size=3, stride=1),
-            nn.Mish(),
+            nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Tanh(),
             nn.Flatten(),
         )
         self.net_mlp = nn.Sequential(
             nn.Linear(39, 64),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(64, 32),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(32, 16),
+            nn.ELU(),
         )
         self.net_hide = nn.Sequential(
             nn.Linear(2048 + 16, 512),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(512, 128),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(128, 32),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(32, self.num_actions),
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
@@ -70,21 +71,6 @@ class Policy(GaussianMixin, Model):
         cnn = self.net_cnn(states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
         mlp = self.net_mlp(states["value"])
         hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
-
-        if torch.isnan(hide).any():
-            raise ValueError("hide")
-        # print(hide)
-        """
-        LeakyRelu
-        tensor([[-8.8203,  7.1914,  0.9116]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.0391,  7.1602,  0.8994]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.0391,  7.1133,  0.8794]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.0703,  6.9336,  0.8677]], device='cuda:0', dtype=torch.float16)
-        tensor([[-8.9844,  7.1289,  0.9390]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.1484,  7.0156,  0.8950]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.0469,  7.0820,  0.9312]], device='cuda:0', dtype=torch.float16)
-        tensor([[-9.0547,  7.0898,  0.9067]], device='cuda:0', dtype=torch.float16)
-        """
 
         return (
             hide,
@@ -100,21 +86,20 @@ class Value(DeterministicMixin, Model):
 
         self.net_mlp = nn.Sequential(
             nn.Linear(63, 256),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(256, 128),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(128, 64),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(64, 32),
-            nn.GELU(),
+            nn.ELU(),
             nn.Linear(32, 1),
         )
 
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         mlp = self.net_mlp(states["critic"])
-        if torch.isnan(mlp).any():
-            raise ValueError("mlp")
+
         return (
             mlp,
             {},
@@ -129,8 +114,9 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-rollouts = 2048
-memory = RandomMemory(memory_size=rollouts, num_envs=env.num_envs, device=device)
+gb = 1
+memory_size = 1024 * gb
+memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -148,23 +134,23 @@ for model in models.values():
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = rollouts
-cfg["learning_epochs"] = 32
-cfg["mini_batches"] = 512
-cfg["discount_factor"] = 0.9995
-cfg["lambda"] = 0.95
-cfg["policy_learning_rate"] = 2.5e-4
-cfg["value_learning_rate"] = 2.5e-4
+cfg["rollouts"] = memory_size
+cfg["learning_epochs"] = 16
+cfg["mini_batches"] = 128
+# cfg["discount_factor"] = 0.9995
+# cfg["lambda"] = 0.95
+# cfg["policy_learning_rate"] = 2.5e-4
+# cfg["value_learning_rate"] = 2.5e-4
 # cfg["grad_norm_clip"] = 1.0
-cfg["ratio_clip"] = 0.2
-cfg["value_clip"] = 0.2
-cfg["clip_predicted_values"] = False
-cfg["entropy_loss_scale"] = 0.0
-cfg["value_loss_scale"] = 0.5
-cfg["kl_threshold"] = 0
-# cfg["random_timesteps"] = 1000
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
-cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
+# cfg["ratio_clip"] = 0.2
+# cfg["value_clip"] = 0.2
+# cfg["clip_predicted_values"] = False
+# cfg["entropy_loss_scale"] = 0.0
+# cfg["value_loss_scale"] = 0.5
+# cfg["kl_threshold"] = 0
+# cfg["random_timesteps"] = 3000
+# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
+# cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
 
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 1000
@@ -183,7 +169,7 @@ agent = PPO(
 # agent.load("./runs/torch/AGV/24-09-25_17-12-11-556727_PPO/checkpoints/agent_100000.pt")
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 1000000}
+cfg_trainer = {"timesteps": 10000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # start training
