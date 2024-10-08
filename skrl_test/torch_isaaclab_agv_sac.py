@@ -40,7 +40,6 @@ class Actor(GaussianMixin, Model):
             nn.Conv2d(64, 128, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Tanh(),
             nn.Flatten(),
         )
 
