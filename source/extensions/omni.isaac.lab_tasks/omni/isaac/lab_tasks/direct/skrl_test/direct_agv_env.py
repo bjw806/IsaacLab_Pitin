@@ -26,6 +26,8 @@ from omni.isaac.lab.sensors import (
     CameraCfg,
     ContactSensor,
     ContactSensorCfg,
+    TiledCamera,
+    TiledCameraCfg,
 )
 from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
@@ -67,7 +69,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     action_scale = 100.0  # [N]
     num_actions = 3
     num_channels = 3
-    num_states = 63
+    # num_states = 63
     # events = AGVEventCfg()
 
     # simulation
@@ -77,12 +79,13 @@ class AGVEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = AGV_CFG.replace(prim_path=f"{ENV_REGEX_NS}/AGV")
 
     # camera
-    rcam: CameraCfg = CameraCfg(
+    rcam: TiledCameraCfg = TiledCameraCfg(
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=440,
-        height=440,
+        width=360,
+        height=360,
+        # colorize_instance_segmentation=True,
     )
 
     niro_cfg = RigidObjectCfg(
@@ -238,7 +241,7 @@ class AGVEnv(DirectRLEnv):
                 ),
             ),
             value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions * 13,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(63,)),
         )
 
         if not self.cfg.num_states:
@@ -277,7 +280,7 @@ class AGVEnv(DirectRLEnv):
         self._niro = RigidObject(self.cfg.niro_cfg)
         self._agv_contact = ContactSensor(self.cfg.agv_contact_cfg)
         self._niro_contact = ContactSensor(self.cfg.niro_contact_cfg)
-        self._rcam = Camera(self.cfg.rcam)
+        self._rcam = TiledCamera(self.cfg.rcam)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -314,37 +317,32 @@ class AGVEnv(DirectRLEnv):
         self._agv.set_joint_effort_target(self.actions, joint_ids=self.actuated_dof_indices)
 
     def _get_observations(self) -> dict:
-        data_type = "rgb" if "rgb" in self.cfg.rcam.data_types else "depth"
+        data_type = "rgb"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
-        # mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
-        # image -= mean_tensor
-
         image = tensor / 255
-        # image = F.interpolate(tensor.permute(0, 3, 1, 2), size=(224, 224), mode='bicubic', align_corners=False)
 
-        # values = torch.cat(
-        #     (
-        #         self.joint_vel[:, self.actuated_dof_indices],
-        #         self.joint_pos[:, self.actuated_dof_indices],
-        #     ),
-        #     dim=-1,
-        # )
+        mean = torch.tensor([0.485, 0.456, 0.406], device=image.device)
+        std = torch.tensor([0.229, 0.224, 0.225], device=image.device)
+
+        # 이미지 정규화 수행
+        normalized_image = (image - mean) / std
 
         values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
         if self.cfg.write_image_to_file:
-            import torchvision.transforms as transforms
-            to_pil = transforms.ToPILImage()
-            pil_image = to_pil(image.squeeze(0).cpu())
-            pil_image.save("output_image.png")
+            array = tensor.squeeze(0).cpu().numpy()
+            array = (array - array.min()) / (array.max() - array.min()) * 255
+            array = array.astype("uint8")  # Convert to uint8 data type
+            image = Image.fromarray(array)
+            image.save("output_image.png")
 
         observations = {
             "policy": {
                 "value": values,
-                "image": image,
+                "image": normalized_image,
                 "critic": self._get_states(),
             },
-            "critic": self._get_states(),
+            # "critic": self._get_states(),
         }
 
         return observations
