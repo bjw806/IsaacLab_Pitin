@@ -236,8 +236,8 @@ class AGVEnv(DirectRLEnv):
                     self.cfg.num_channels,
                 ),
             ),
-            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions * 13,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(60,)),
+            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(73,)),
         )
 
         if not self.cfg.num_states:
@@ -320,7 +320,16 @@ class AGVEnv(DirectRLEnv):
         mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
         image -= mean_tensor
 
-        values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
+        # values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
+
+        values = torch.cat(
+            (
+                math_utils.normalize(self._agv.data.joint_pos),
+                math_utils.normalize(self._agv.data.joint_vel),
+                math_utils.normalize(self._agv.data.joint_acc),
+            ),
+            dim=-1,
+        )
 
         if self.cfg.write_image_to_file:
             array = tensor.squeeze(0).cpu().numpy()
@@ -329,37 +338,45 @@ class AGVEnv(DirectRLEnv):
             image = Image.fromarray(array)
             image.save("output_image.png")
 
+        def get_dist(right: bool = True):
+            hole_pos_w = self.hole_position(True)
+            curr_pin_pos_w = self.pin_position(True)
+
+            hole_xy = hole_pos_w[:, 0:1]
+            curr_pin_xy = curr_pin_pos_w[:, 0:1]
+            curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
+
+            hole_z = hole_pos_w[:, 2]
+            curr_pin_z = curr_pin_pos_w[:, 2]
+            curr_z_dist = hole_z - curr_pin_z
+            return torch.vstack((curr_xy_distance, curr_z_dist))
+
         observations = {
             "policy": {
-                "value": math_utils.normalize(values),
+                "value": values,
                 "image": image,
-                "critic": self._get_states(),
+                "critic": torch.cat(
+                    (
+                        values,
+                        self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13),
+                        # self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
+                        # self.pin_position(True) - self.scene.env_origins,
+                        # self.pin_position(False) - self.scene.env_origins,
+                        # self.hole_position(True) - self.scene.env_origins,
+                        # self.hole_position(False) - self.scene.env_origins,
+                        # self.init_hole_pos - self.scene.env_origins,
+                        # self.init_pin_pos - self.scene.env_origins,
+                        torch.vstack((get_dist(True), get_dist(False))),
+                    ),
+                    dim=-1,
+                ),
             },
             # "critic": self._get_states(),
         }
 
+        # print(observations["policy"]["critic"].shape)
+
         return observations
-
-    def _get_states(self) -> torch.Tensor:
-        states = torch.cat(
-            (
-                math_utils.normalize(self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)),
-                # position
-                self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
-                self.pin_position(True) - self.scene.env_origins,
-                self.pin_position(False) - self.scene.env_origins,
-                self.hole_position(True) - self.scene.env_origins,
-                self.hole_position(False) - self.scene.env_origins,
-                self.init_hole_pos - self.scene.env_origins,
-                self.init_pin_pos - self.scene.env_origins,
-            ),
-            dim=-1,
-        )
-
-        # states = torch.where(torch.isinf(states), torch.tensor(-1.0), states)
-        # print(states.shape)
-
-        return states
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
