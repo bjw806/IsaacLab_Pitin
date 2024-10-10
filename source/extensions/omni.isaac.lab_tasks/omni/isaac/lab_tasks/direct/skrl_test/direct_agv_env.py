@@ -7,7 +7,6 @@ import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
-import torch.nn.functional as F
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -22,8 +21,6 @@ from omni.isaac.lab.envs import (
 from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
 from omni.isaac.lab.sensors import (
-    Camera,
-    CameraCfg,
     ContactSensor,
     ContactSensorCfg,
     TiledCamera,
@@ -36,7 +33,6 @@ from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from PIL import Image
 from pxr import Gf, UsdGeom
 from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
-
 from .agv_cfg import AGV_CFG, AGV_JOINT
 
 
@@ -241,7 +237,7 @@ class AGVEnv(DirectRLEnv):
                 ),
             ),
             value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions * 13,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(63,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(60,)),
         )
 
         if not self.cfg.num_states:
@@ -262,7 +258,7 @@ class AGVEnv(DirectRLEnv):
         else:
             self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.cfg.num_states,))
 
-        self.single_action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_actions,))
+        self.single_action_space = gym.spaces.Box(low=-1, high=1, shape=(self.num_actions,))
 
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(
@@ -319,13 +315,10 @@ class AGVEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         data_type = "rgb"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
-        image = tensor / 255
 
-        mean = torch.tensor([0.485, 0.456, 0.406], device=image.device)
-        std = torch.tensor([0.229, 0.224, 0.225], device=image.device)
-
-        # 이미지 정규화 수행
-        normalized_image = (image - mean) / std
+        image = tensor.float() / 255.0
+        mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
+        image -= mean_tensor
 
         values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
@@ -338,8 +331,8 @@ class AGVEnv(DirectRLEnv):
 
         observations = {
             "policy": {
-                "value": values,
-                "image": normalized_image,
+                "value": math_utils.normalize(values),
+                "image": image,
                 "critic": self._get_states(),
             },
             # "critic": self._get_states(),
@@ -350,23 +343,13 @@ class AGVEnv(DirectRLEnv):
     def _get_states(self) -> torch.Tensor:
         states = torch.cat(
             (
-                # self._agv.data.body_pos_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 3),
-                # self._agv.data.body_quat_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 4),
-                # self._agv.data.body_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
-                # self._agv.data.body_ang_vel_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
-                # self._agv.data.body_ang_acc_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 6),
-                self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13),
-                # niro
+                math_utils.normalize(self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)),
+                # position
                 self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
-                # applied actions (3)
-                self.actions,
-                # pin
                 self.pin_position(True) - self.scene.env_origins,
                 self.pin_position(False) - self.scene.env_origins,
-                # # hole
                 self.hole_position(True) - self.scene.env_origins,
                 self.hole_position(False) - self.scene.env_origins,
-                # initial values
                 self.init_hole_pos - self.scene.env_origins,
                 self.init_pin_pos - self.scene.env_origins,
             ),
@@ -635,7 +618,7 @@ class AGVEnv(DirectRLEnv):
         rew = dist + dist2 - self.init_distance_r
 
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
-        reward = curr_xy_rew + curr_z_rew - rew
+        reward = curr_xy_rew + curr_z_rew + relative_xy_rew*0.1 + relative_z_rew*0.1 - rew
 
         UP = "\x1b[3A"
         print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
