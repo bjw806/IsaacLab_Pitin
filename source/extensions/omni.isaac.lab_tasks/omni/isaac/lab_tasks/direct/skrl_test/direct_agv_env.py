@@ -344,12 +344,12 @@ class AGVEnv(DirectRLEnv):
 
             hole_xy = hole_pos_w[:, 0:1]
             curr_pin_xy = curr_pin_pos_w[:, 0:1]
-            curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
+            curr_xy_dist = self.euclidean_distance(hole_xy, curr_pin_xy)
 
             hole_z = hole_pos_w[:, 2]
             curr_pin_z = curr_pin_pos_w[:, 2]
             curr_z_dist = hole_z - curr_pin_z
-            return torch.vstack((curr_xy_distance, curr_z_dist))
+            return torch.vstack((curr_xy_dist, curr_z_dist)).T
 
         observations = {
             "policy": {
@@ -366,7 +366,7 @@ class AGVEnv(DirectRLEnv):
                         # self.hole_position(False) - self.scene.env_origins,
                         # self.init_hole_pos - self.scene.env_origins,
                         # self.init_pin_pos - self.scene.env_origins,
-                        torch.vstack((get_dist(True), get_dist(False))),
+                        torch.cat((get_dist(True), get_dist(False)), dim=-1),
                     ),
                     dim=-1,
                 ),
