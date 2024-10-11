@@ -33,7 +33,7 @@ class Policy(GaussianMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
         self.net_cnn = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=8, stride=4),
+            nn.Conv2d(3, 16, kernel_size=7, stride=3),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(16, 32, kernel_size=5, stride=2),
@@ -44,39 +44,43 @@ class Policy(GaussianMixin, Model):
             nn.Conv2d(64, 128, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Tanh(),
             nn.Flatten(),
         )
-        self.net_mlp = nn.Sequential(
-            nn.Linear(39, 64),
-            nn.ELU(),
-            nn.Linear(64, 32),
-            nn.ELU(),
-            nn.Linear(32, 16),
-            nn.ELU(),
-        )
-        self.net_hide = nn.Sequential(
-            nn.Linear(2048 + 16, 512),
-            nn.ELU(),
+
+        self.net_local = nn.Sequential(
+            nn.Linear(3200, 512),
+            nn.ReLU(),
             nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 10), # x, y, z, width, height x2
+        )
+
+        self.net_hide = nn.Sequential(
+            nn.Linear(42, 32),
             nn.ELU(),
-            nn.Linear(128, 32),
+            nn.Linear(32, 32),
             nn.ELU(),
             nn.Linear(32, self.num_actions),
+            nn.Tanh(),
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
-        cnn = self.net_cnn(states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
-        mlp = self.net_mlp(states["value"])
-        hide = self.net_hide(torch.cat([cnn, mlp], dim=1))
+        # cnn = self.net_cnn(states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
+        # hide = self.net_hide(torch.cat([cnn, states["value"], self.net_local(cnn)], dim=1))
+        hide = self.net_hide(states["value"])
 
         return (
             hide,
             self.log_std_parameter,
             {},
         )
+    
+    def mask(self):
+        from ultralytics import SAM
+        model = SAM("models/sam2_t.pt")
+        mask = model("sam_test.jpg")[0].masks
 
 
 class Value(DeterministicMixin, Model):
@@ -85,13 +89,9 @@ class Value(DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net_mlp = nn.Sequential(
-            nn.Linear(63, 256),
+            nn.Linear(85, 32),
             nn.ELU(),
-            nn.Linear(256, 128),
-            nn.ELU(),
-            nn.Linear(128, 64),
-            nn.ELU(),
-            nn.Linear(64, 32),
+            nn.Linear(32, 32),
             nn.ELU(),
             nn.Linear(32, 1),
         )
@@ -114,8 +114,8 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-gb = 1
-memory_size = 1024 * gb
+replay_buffer_size = 1024 * 3
+memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
 
@@ -136,12 +136,12 @@ for model in models.values():
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
 cfg["learning_epochs"] = 16
-cfg["mini_batches"] = 128
+cfg["mini_batches"] = 256
 # cfg["discount_factor"] = 0.9995
 # cfg["lambda"] = 0.95
-# cfg["policy_learning_rate"] = 2.5e-4
-# cfg["value_learning_rate"] = 2.5e-4
-# cfg["grad_norm_clip"] = 1.0
+cfg["policy_learning_rate"] = 2.5e-4
+cfg["value_learning_rate"] = 2.5e-4
+cfg["grad_norm_clip"] = 1.0
 # cfg["ratio_clip"] = 0.2
 # cfg["value_clip"] = 0.2
 # cfg["clip_predicted_values"] = False

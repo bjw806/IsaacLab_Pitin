@@ -64,7 +64,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_actions = 3
-    num_channels = 3
+    num_channels = 4
     # num_states = 63
     # events = AGVEventCfg()
 
@@ -205,12 +205,17 @@ class AGVEnv(DirectRLEnv):
 
         self.joint_pos = self._agv.data.joint_pos
         self.joint_vel = self._agv.data.joint_vel
-
-        if len(self.cfg.rcam.data_types) != 1:
-            raise ValueError(
-                "The camera environment only supports one image type at a time but the following were"
-                f" provided: {self.cfg.rcam.data_types}"
-            )
+        
+        self.serial_frames = torch.zeros(
+            (
+                self.num_envs, 
+                self.cfg.rcam.height,
+                self.cfg.rcam.width,
+                4,
+            ), 
+            dtype=torch.float, 
+            device=self.device
+        )
 
     def close(self):
         # print(2)
@@ -236,7 +241,7 @@ class AGVEnv(DirectRLEnv):
                     self.cfg.num_channels,
                 ),
             ),
-            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+            # value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
             critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(73,)),
         )
 
@@ -320,6 +325,11 @@ class AGVEnv(DirectRLEnv):
         mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
         image -= mean_tensor
 
+        grayscale_image = 0.2989 * image[:, :, :, 0] + 0.5870 * image[:, :, :, 1] + 0.1140 * image[:, :, :, 2]
+
+        self.serial_frames[:, :, :, :-1] = self.serial_frames[:, :, :, 1:]
+        self.serial_frames[:, :, :, -1] = grayscale_image
+
         # values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
         values = torch.cat(
@@ -332,11 +342,17 @@ class AGVEnv(DirectRLEnv):
         )
 
         if self.cfg.write_image_to_file:
-            array = tensor.squeeze(0).cpu().numpy()
-            array = (array - array.min()) / (array.max() - array.min()) * 255
-            array = array.astype("uint8")  # Convert to uint8 data type
-            image = Image.fromarray(array)
-            image.save("output_image.png")
+            array = tensor.cpu().numpy()
+    
+            for i in range(array.shape[0]):
+                image_array = array[i]
+                image_array = image_array.astype("uint8")
+
+                # 이미지 생성 및 저장
+                img = Image.fromarray(image_array)
+                img.save(f"skrl_test/train_images/ff.png")
+            self.save_image = False
+            self.image_counter += 1
 
         def get_dist(right: bool = True):
             hole_pos_w = self.hole_position(True)
@@ -353,8 +369,8 @@ class AGVEnv(DirectRLEnv):
 
         observations = {
             "policy": {
-                "value": values,
-                "image": image,
+                # "value": values,
+                "image": self.serial_frames,
                 "critic": torch.cat(
                     (
                         values,
@@ -394,10 +410,10 @@ class AGVEnv(DirectRLEnv):
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + 0.1
 
-        # UP = "\x1b[3A"
-        # print(
-        #     f"\npin: {round(rew_pin_r[0].item(), 2)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
-        # )
+        UP = "\x1b[3A"
+        print(
+            f"\npin: {round(rew_pin_r[0].item(), 3)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+        )
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -413,7 +429,12 @@ class AGVEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
-
+        
+        self.serial_frames = torch.zeros(
+            self.serial_frames.shape, 
+            dtype=torch.float, 
+            device=self.device
+        )
         self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
         self.randomize_object_position(env_ids, (-0.1, 0.1), (-0.03, 0.03), "niro")
 
@@ -637,10 +658,10 @@ class AGVEnv(DirectRLEnv):
         self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
         reward = curr_xy_rew + curr_z_rew + relative_xy_rew*0.1 + relative_z_rew*0.1 - rew
 
-        UP = "\x1b[3A"
-        print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
-            f"\nrew: {round(reward[0].item(), 4)}_\n{UP}\r"
-        )
+        # UP = "\x1b[3A"
+        # print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
+        #     f"\nrew: {round(reward[0].item(), 4)}_\n{UP}\r"
+        # )
 
         return reward
 
@@ -683,13 +704,13 @@ class AGVEnv(DirectRLEnv):
         self.prev_pos_w["r_pin"][env_id] = r_pin_pos_w
         self.prev_pos_w["l_pin"][env_id] = l_pin_pos_w
 
-        marker_locations = torch.vstack(
-            (
-                self.init_hole_pos,
-                self.init_pin_pos# - torch.tensor([0, 0, 0.479], device="cuda:0"),
-            )
-        )
-        self.my_visualizer.visualize(marker_locations)
+        # marker_locations = torch.vstack(
+        #     (
+        #         self.init_hole_pos,
+        #         self.init_pin_pos# - torch.tensor([0, 0, 0.479], device="cuda:0"),
+        #     )
+        # )
+        # self.my_visualizer.visualize(marker_locations)
 
     def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
         net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history

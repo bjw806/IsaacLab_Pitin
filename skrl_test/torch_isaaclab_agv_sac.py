@@ -29,7 +29,7 @@ class Actor(GaussianMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
 
         self.net_cnn = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=7, stride=3),
+            nn.Conv2d(4, 16, kernel_size=7, stride=3),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(16, 32, kernel_size=5, stride=2),
@@ -43,8 +43,16 @@ class Actor(GaussianMixin, Model):
             nn.Flatten(),
         )
 
+        self.net_local = nn.Sequential(
+            nn.Linear(3200, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 10), # x, y, z, width, height x2
+        )
+
         self.net_fc = nn.Sequential(
-            nn.Linear(3200 + 39, 512),
+            nn.Linear(3200, 512),
             nn.ELU(),
             nn.Linear(512, 128),
             nn.ELU(),
@@ -58,9 +66,9 @@ class Actor(GaussianMixin, Model):
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
-        cnn = self.net_cnn(image)
-
-        fc = self.net_fc(torch.cat([cnn, states["value"]], dim=1))
+        # cnn = self.net_cnn(image)
+        # fc = self.net_fc(torch.cat([cnn, states["value"], self.net_local(cnn)], dim=1))
+        fc = self.net_fc(self.net_cnn(image))
 
         return (
             fc,
@@ -75,7 +83,7 @@ class Critic(DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net_mlp = nn.Sequential(
-            nn.Linear(63 + self.num_actions, 16),
+            nn.Linear(73 + self.num_actions, 16),
             nn.ELU(),
             nn.Linear(16, 1),
         )
@@ -97,7 +105,7 @@ env = wrap_env(env, wrapper="isaaclab-single-agent")
 
 device = env.device
 
-replay_buffer_size = 1024 * 3
+replay_buffer_size = 1024 * 8
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=torch.device('cpu'))
 
@@ -116,16 +124,16 @@ for model in models.values():
 
 cfg = SAC_DEFAULT_CONFIG.copy()
 cfg["gradient_steps"] = 1
-cfg["batch_size"] = 256
-cfg["discount_factor"] = 0.99
+cfg["batch_size"] = 512
+cfg["discount_factor"] = 0.98
 cfg["polyak"] = 0.005
-cfg["actor_learning_rate"] = 1e-4
-cfg["critic_learning_rate"] = 1e-5
+cfg["actor_learning_rate"] = 1e-5
+cfg["critic_learning_rate"] = 1e-6
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = memory_size
 cfg["grad_norm_clip"] = 1.0
 cfg["learn_entropy"] = True
-cfg["entropy_learning_rate"] = 1e-4
+cfg["entropy_learning_rate"] = 1e-5
 cfg["initial_entropy_value"] = 0.9
 # cfg["target_entropy"] = 0.98 * np.array(-np.log(1.0 / 3), dtype=np.float32)
 
