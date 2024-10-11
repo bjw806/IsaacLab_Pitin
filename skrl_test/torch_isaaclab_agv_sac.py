@@ -29,29 +29,21 @@ class Actor(GaussianMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
 
         self.net_cnn = nn.Sequential(
-            nn.Conv2d(in_channels=4, out_channels=32, kernel_size=8, stride=4),
+            nn.Conv2d(4, 32, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
+            nn.Conv2d(32, 64, kernel_size=5, stride=2),
             nn.ReLU(),
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1),
+            nn.Conv2d(128, 256, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1),
+            nn.Conv2d(256, 256, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
         )
 
-        self.net_local = nn.Sequential(
-            nn.Linear(3200, 512),
-            nn.ReLU(),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Linear(128, 10), # x, y, z, width, height x2
-        )
-
         self.net_fc = nn.Sequential(
-            nn.Linear(3200, 512),
+            nn.Linear(12544, 512),
             nn.ELU(),
             nn.Linear(512, 128),
             nn.ELU(),
@@ -83,6 +75,8 @@ class Critic(DeterministicMixin, Model):
 
         self.net_mlp = nn.Sequential(
             nn.Linear(73 + self.num_actions, 16),
+            nn.ELU(),
+            nn.Linear(16, 16),
             nn.ELU(),
             nn.Linear(16, 1),
         )
