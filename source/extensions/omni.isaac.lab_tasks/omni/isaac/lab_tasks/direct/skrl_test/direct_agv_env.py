@@ -7,6 +7,7 @@ import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
+from torchvision import transforms
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -209,9 +210,9 @@ class AGVEnv(DirectRLEnv):
         self.serial_frames = torch.zeros(
             (
                 self.num_envs, 
+                self.cfg.num_channels,
                 self.cfg.rcam.height,
                 self.cfg.rcam.width,
-                4,
             ), 
             dtype=torch.float, 
             device=self.device
@@ -236,13 +237,13 @@ class AGVEnv(DirectRLEnv):
                 low=-np.inf,
                 high=np.inf,
                 shape=(
+                    self.cfg.num_channels,
                     self.cfg.rcam.height,
                     self.cfg.rcam.width,
-                    self.cfg.num_channels,
                 ),
             ),
-            # value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(73,)),
+            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(81,)),
         )
 
         if not self.cfg.num_states:
@@ -319,16 +320,13 @@ class AGVEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         data_type = "rgb"
-        tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]
+        tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]        
+        grayscale = transforms.Grayscale(1)
+        # normalize = transforms.Normalize(0.0, 1.0)
+        grayscale_image = grayscale(tensor.permute(0, 3, 1, 2).float() / 255.0)
 
-        image = tensor.float() / 255.0
-        mean_tensor = torch.mean(image, dim=(1, 2), keepdim=True)
-        image -= mean_tensor
-
-        grayscale_image = 0.2989 * image[:, :, :, 0] + 0.5870 * image[:, :, :, 1] + 0.1140 * image[:, :, :, 2]
-
-        self.serial_frames[:, :, :, :-1] = self.serial_frames[:, :, :, 1:]
-        self.serial_frames[:, :, :, -1] = grayscale_image
+        self.serial_frames[:, :-1, :, :] = self.serial_frames[:, 1:, :, :]
+        self.serial_frames[:, -1, :, :] = grayscale_image.squeeze(1)
 
         # values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
 
@@ -342,7 +340,7 @@ class AGVEnv(DirectRLEnv):
         )
 
         if self.cfg.write_image_to_file:
-            array = tensor.cpu().numpy()
+            array = grayscale_image.cpu().numpy()
     
             for i in range(array.shape[0]):
                 image_array = array[i]
@@ -369,20 +367,24 @@ class AGVEnv(DirectRLEnv):
 
         observations = {
             "policy": {
-                # "value": values,
+                "value": values,
                 "image": self.serial_frames,
                 "critic": torch.cat(
                     (
                         values,
-                        self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13),
+                        math_utils.normalize(
+                            self._agv.data.body_state_w[
+                                :, self.actuated_dof_indices
+                            ].view(self.num_envs, self.num_actions * 13)
+                        ),
                         # self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
-                        # self.pin_position(True) - self.scene.env_origins,
-                        # self.pin_position(False) - self.scene.env_origins,
-                        # self.hole_position(True) - self.scene.env_origins,
-                        # self.hole_position(False) - self.scene.env_origins,
-                        # self.init_hole_pos - self.scene.env_origins,
-                        # self.init_pin_pos - self.scene.env_origins,
-                        torch.cat((get_dist(True), get_dist(False)), dim=-1),
+                        self.pin_position(True) - self._agv.data.root_pos_w,
+                        self.pin_position(False) - self._agv.data.root_pos_w,
+                        self.hole_position(True) - self._agv.data.root_pos_w,
+                        self.hole_position(False) - self._agv.data.root_pos_w,
+                        # self.init_hole_pos - self._agv.data.root_pos_w,
+                        # self.init_pin_pos - self._agv.data.root_pos_w,
+                        # torch.cat((get_dist(True), get_dist(False)), dim=-1),
                     ),
                     dim=-1,
                 ),
@@ -405,7 +407,7 @@ class AGVEnv(DirectRLEnv):
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * 100
         )
-        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.1
+        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.01
 
         # sum
         total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + 0.1

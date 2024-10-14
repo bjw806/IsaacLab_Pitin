@@ -43,12 +43,12 @@ class Actor(GaussianMixin, Model):
         )
 
         self.net_fc = nn.Sequential(
-            nn.Linear(12544, 512),
-            nn.ELU(),
+            nn.Linear(12544 + 30, 512),
+            nn.ReLU(),
             nn.Linear(512, 128),
-            nn.ELU(),
+            nn.ReLU(),
             nn.Linear(128, 32),
-            nn.ELU(),
+            nn.ReLU(),
             nn.Linear(32, self.num_actions),
             nn.Tanh(),
         )
@@ -56,10 +56,8 @@ class Actor(GaussianMixin, Model):
 
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
-        image = states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2)
-        # cnn = self.net_cnn(image)
-        # fc = self.net_fc(torch.cat([cnn, states["value"], self.net_local(cnn)], dim=1))
-        fc = self.net_fc(self.net_cnn(image))
+        image = states["image"].view(-1, *self.observation_space["image"].shape)
+        fc = self.net_fc(torch.cat([self.net_cnn(image), states["value"]], dim=1))
 
         return (
             fc,
@@ -74,10 +72,12 @@ class Critic(DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net_mlp = nn.Sequential(
-            nn.Linear(73 + self.num_actions, 16),
-            nn.ELU(),
-            nn.Linear(16, 16),
-            nn.ELU(),
+            nn.Linear(81 + self.num_actions, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 16),
+            nn.ReLU(),
             nn.Linear(16, 1),
         )
 
@@ -120,8 +120,8 @@ cfg["gradient_steps"] = 1
 cfg["batch_size"] = 512
 cfg["discount_factor"] = 0.98
 cfg["polyak"] = 0.005
-cfg["actor_learning_rate"] = 1e-5
-cfg["critic_learning_rate"] = 1e-6
+cfg["actor_learning_rate"] = 2.5e-6
+cfg["critic_learning_rate"] = 5e-7
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = memory_size
 cfg["grad_norm_clip"] = 1.0
@@ -143,7 +143,7 @@ agent = SAC(
     device=device,
 )
 
-# agent.load("./runs/torch/AGV/24-09-20_11-23-45-384181_PPO_RNN/checkpoints/agent_200000.pt")
+# agent.load("./runs/torch/AGV/24-10-11_17-43-00-133994_SAC/checkpoints/agent_400000.pt")
 
 cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
