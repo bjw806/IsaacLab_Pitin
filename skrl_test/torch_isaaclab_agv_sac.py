@@ -42,9 +42,62 @@ class Actor(GaussianMixin, Model):
             nn.Flatten(),
         )
 
-        self.net_fc = nn.Sequential(
-            nn.Linear(12544 + 30, 512),
+        self.net_features = nn.Sequential(
+            nn.Conv1d(8, 32, kernel_size=5, stride=3),
             nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        """
+                    nn.Linear(10496, 4096),
+            nn.BatchNorm1d(4096),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(4096, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.BatchNorm1d(16),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, 4),
+            nn.ReLU(),
+            nn.Linear(4, self.num_actions),
+            nn.Tanh(),
+        """
+
+        self.net_fc = nn.Sequential(
+            nn.Linear(10496, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(512, 128),
             nn.ReLU(),
             nn.Linear(128, 32),
@@ -57,7 +110,8 @@ class Actor(GaussianMixin, Model):
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape)
-        fc = self.net_fc(torch.cat([self.net_cnn(image), states["value"]], dim=1))
+        features = self.net_features(image)
+        fc = self.net_fc(features)
 
         return (
             fc,
@@ -72,11 +126,13 @@ class Critic(DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net_mlp = nn.Sequential(
-            nn.Linear(81 + self.num_actions, 128),
+            nn.Linear(81 + self.num_actions, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Linear(128, 64),
+            nn.Dropout(0.5),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(64, 16),
+            nn.Linear(32, 16),
             nn.ReLU(),
             nn.Linear(16, 1),
         )
@@ -98,9 +154,9 @@ env = wrap_env(env, wrapper="isaaclab-single-agent")
 
 device = env.device
 
-replay_buffer_size = 1024 * 8
+replay_buffer_size = 1024 * 256
 memory_size = int(replay_buffer_size / env.num_envs)
-memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=torch.device('cpu'))
+memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
 
 models = {}
@@ -117,17 +173,17 @@ for model in models.values():
 
 cfg = SAC_DEFAULT_CONFIG.copy()
 cfg["gradient_steps"] = 1
-cfg["batch_size"] = 512
+cfg["batch_size"] = 1024
 cfg["discount_factor"] = 0.98
-cfg["polyak"] = 0.005
-cfg["actor_learning_rate"] = 2.5e-6
-cfg["critic_learning_rate"] = 5e-7
+cfg["polyak"] = 0.01
+cfg["actor_learning_rate"] = 1e-6
+cfg["critic_learning_rate"] = 1e-7
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = memory_size
 cfg["grad_norm_clip"] = 1.0
 cfg["learn_entropy"] = True
 cfg["entropy_learning_rate"] = 1e-5
-cfg["initial_entropy_value"] = 0.9
+cfg["initial_entropy_value"] = 0.7
 # cfg["target_entropy"] = 0.98 * np.array(-np.log(1.0 / 3), dtype=np.float32)
 
 cfg["experiment"]["write_interval"] = 300
