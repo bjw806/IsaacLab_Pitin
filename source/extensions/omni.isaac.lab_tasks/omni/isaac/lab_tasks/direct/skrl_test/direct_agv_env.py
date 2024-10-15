@@ -35,7 +35,15 @@ from PIL import Image
 from pxr import Gf, UsdGeom
 from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 from .agv_cfg import AGV_CFG, AGV_JOINT
+from ultralytics import YOLO
+from ultralytics import settings
 
+
+settings.update({
+    "runs_dir": "~/Desktop/repository/IsaacLab_Pitin/", 
+    "weights_dir": "~/Desktop/repository/IsaacLab_Pitin/skrl_test/yolo/", 
+    "tensorboard": False,
+})
 
 def define_markers() -> VisualizationMarkers:
     marker_cfg = VisualizationMarkersCfg(
@@ -65,7 +73,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_actions = 3
-    num_channels = 4
+    num_channels = 8
     # num_states = 63
     # events = AGVEventCfg()
 
@@ -80,8 +88,8 @@ class AGVEnvCfg(DirectRLEnvCfg):
         prim_path=f"{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        width=360,
-        height=360,
+        width=640,
+        height=640,
         # colorize_instance_segmentation=True,
     )
 
@@ -156,6 +164,9 @@ class AGVEnv(DirectRLEnv):
         # print(1)
         super().__init__(cfg, render_mode, **kwargs)
 
+        self.yolo = YOLO("./skrl_test/best.pt")
+        # self.yolo_show = YOLO("./skrl_test/best.pt")
+
         # self._MB_LW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_LW_REV)
         # self._MB_RW_REV_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_RW_REV)
         # self._MB_PZ_PRI_idx, _ = self._agv.find_joints(self.cfg.agv_joint.MB_PZ_PRI)
@@ -211,12 +222,13 @@ class AGVEnv(DirectRLEnv):
             (
                 self.num_envs, 
                 self.cfg.num_channels,
-                self.cfg.rcam.height,
-                self.cfg.rcam.width,
+                512,
             ), 
             dtype=torch.float, 
             device=self.device
         )
+
+        self.idx = 1
 
     def close(self):
         # print(2)
@@ -238,8 +250,7 @@ class AGVEnv(DirectRLEnv):
                 high=np.inf,
                 shape=(
                     self.cfg.num_channels,
-                    self.cfg.rcam.height,
-                    self.cfg.rcam.width,
+                    512,
                 ),
             ),
             value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
@@ -320,15 +331,17 @@ class AGVEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         data_type = "rgb"
-        tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3]        
-        grayscale = transforms.Grayscale(1)
+        tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3] 
+        image = tensor.permute(0, 3, 1, 2).float() / 255.0
+        # grayscale = transforms.Grayscale(1)
         # normalize = transforms.Normalize(0.0, 1.0)
-        grayscale_image = grayscale(tensor.permute(0, 3, 1, 2).float() / 255.0)
+        # grayscale_image = grayscale(image)
+        # self.yolo_show.predict(image, show=True, verbose=False)
+        results = self.yolo.predict(image, embed=[22], verbose=False)
+        features = torch.stack(results)
 
-        self.serial_frames[:, :-1, :, :] = self.serial_frames[:, 1:, :, :]
-        self.serial_frames[:, -1, :, :] = grayscale_image.squeeze(1)
-
-        # values = self._agv.data.body_state_w[:, self.actuated_dof_indices].view(self.num_envs, self.num_actions * 13)
+        self.serial_frames[:, :-1, :] = self.serial_frames[:, 1:, :].clone()
+        self.serial_frames[:, -1, :] = features
 
         values = torch.cat(
             (
@@ -340,7 +353,7 @@ class AGVEnv(DirectRLEnv):
         )
 
         if self.cfg.write_image_to_file:
-            array = grayscale_image.cpu().numpy()
+            array = image.cpu().numpy()
     
             for i in range(array.shape[0]):
                 image_array = array[i]
@@ -398,19 +411,21 @@ class AGVEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
-        rew_pin_r = self.pin_reward(True)
-        correct_rew = self.pin_correct(True).int() * 100
+        rew_pin_r = self.pin_reward(True) * 0.3
+        correct_xy_rew = self.pin_correct_xy(True).int() * 0.1
+        correct_z_rew = self.pin_correct_xy(True).int() * 0.1
+        correct_rew = self.pin_correct(True).int()
 
         # penalty
         z_penalty = (
-            -self.terminate_z().int()
+            self.terminate_z().int()
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
-            * 100
+            * -1
         )
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.01
 
         # sum
-        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + 0.1
+        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + correct_xy_rew + correct_z_rew + 0.01
 
         UP = "\x1b[3A"
         print(
@@ -596,6 +611,18 @@ class AGVEnv(DirectRLEnv):
     def pin_correct(self, right: bool = True):
         hole_pos_w = self.hole_position(right)
         pin_pos_w = self.pin_position(right)
+        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
+        return distance < 0.01
+    
+    def pin_correct_xy(self, right: bool = True):
+        hole_pos_w = self.hole_position(right)[:,:1]
+        pin_pos_w = self.pin_position(right)[:,:1]
+        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
+        return distance < 0.01
+    
+    def pin_correct_z(self, right: bool = True):
+        hole_pos_w = self.hole_position(right)[:,2]
+        pin_pos_w = self.pin_position(right)[:,2]
         distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
         return distance < 0.01
 
