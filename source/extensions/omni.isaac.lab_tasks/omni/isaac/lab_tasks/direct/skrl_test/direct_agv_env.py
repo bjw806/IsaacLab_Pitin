@@ -411,16 +411,16 @@ class AGVEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
-        rew_pin_r = self.pin_reward(True) * 0.3
-        correct_xy_rew = self.pin_correct_xy(True).int() * 0.1
-        correct_z_rew = self.pin_correct_xy(True).int() * 0.1
-        correct_rew = self.pin_correct(True).int()
+        rew_pin_r = self.pin_reward(True)
+        correct_xy_rew = self.pin_correct_xy(True).int()
+        correct_z_rew = self.pin_correct_z(True).int()
+        correct_rew = self.pin_correct(True).int() * 10
 
         # penalty
         z_penalty = (
             self.terminate_z().int()
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
-            * -1
+            * -10
         )
         contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.01
 
