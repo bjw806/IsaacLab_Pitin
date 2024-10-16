@@ -73,7 +73,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_actions = 3
-    num_channels = 8
+    num_channels = 4
     # num_states = 63
     # events = AGVEventCfg()
 
@@ -221,8 +221,8 @@ class AGVEnv(DirectRLEnv):
         self.serial_frames = torch.zeros(
             (
                 self.num_envs, 
-                self.cfg.num_channels,
                 512,
+                self.cfg.num_channels,
             ), 
             dtype=torch.float, 
             device=self.device
@@ -249,12 +249,12 @@ class AGVEnv(DirectRLEnv):
                 low=-np.inf,
                 high=np.inf,
                 shape=(
-                    self.cfg.num_channels,
                     512,
+                    self.cfg.num_channels,
                 ),
             ),
-            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(81,)),
+            # value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(12,)),
         )
 
         if not self.cfg.num_states:
@@ -342,17 +342,17 @@ class AGVEnv(DirectRLEnv):
         results = self.yolo.predict(image, embed=[22], verbose=False)
         features = torch.stack(results)
 
-        self.serial_frames[:, :-1, :] = self.serial_frames[:, 1:, :].clone()
-        self.serial_frames[:, -1, :] = features
+        self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
+        self.serial_frames[:, :, -1] = features
 
-        values = torch.cat(
-            (
-                math_utils.normalize(self._agv.data.joint_pos),
-                math_utils.normalize(self._agv.data.joint_vel),
-                math_utils.normalize(self._agv.data.joint_acc),
-            ),
-            dim=-1,
-        )
+        # values = torch.cat(
+        #     (
+        #         math_utils.normalize(self._agv.data.joint_pos),
+        #         math_utils.normalize(self._agv.data.joint_vel),
+        #         math_utils.normalize(self._agv.data.joint_acc),
+        #     ),
+        #     dim=-1,
+        # )
 
         if self.cfg.write_image_to_file:
             array = image.cpu().numpy()
@@ -369,16 +369,16 @@ class AGVEnv(DirectRLEnv):
 
         observations = {
             "policy": {
-                "value": values,
+                # "value": values,
                 "image": self.serial_frames,
                 "critic": torch.cat(
                     (
-                        values,
-                        math_utils.normalize(
-                            self._agv.data.body_state_w[
-                                :, self.actuated_dof_indices
-                            ].view(self.num_envs, self.num_actions * 13)
-                        ),
+                        # values,
+                        # math_utils.normalize(
+                        #     self._agv.data.body_state_w[
+                        #         :, self.actuated_dof_indices
+                        #     ].view(self.num_envs, self.num_actions * 13)
+                        # ),
                         # self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
                         self.pin_position(True) - self._agv.data.root_pos_w,
                         self.pin_position(False) - self._agv.data.root_pos_w,
@@ -409,10 +409,18 @@ class AGVEnv(DirectRLEnv):
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * -10
         )
-        contact_penalty = -self.is_undesired_contacts(self._niro_contact).int() * 0.01
+        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -0.5
 
         # sum
-        total_reward = rew_pin_r + correct_rew + z_penalty + contact_penalty + correct_xy_rew + correct_z_rew + 0.01
+        total_reward = (
+            rew_pin_r
+            + correct_rew
+            + z_penalty
+            + contact_penalty
+            + correct_xy_rew
+            + correct_z_rew
+            + 0.1
+        )
 
         UP = "\x1b[3A"
         print(
@@ -666,7 +674,7 @@ class AGVEnv(DirectRLEnv):
         rew = dist1 + dist2 - self.init_distance_r
 
         self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
-        reward = curr_xy_rew + curr_z_rew + relative_xy_rew*0.1 + relative_z_rew*0.1 - rew
+        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew - rew
 
         # UP = "\x1b[3A"
         # print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
