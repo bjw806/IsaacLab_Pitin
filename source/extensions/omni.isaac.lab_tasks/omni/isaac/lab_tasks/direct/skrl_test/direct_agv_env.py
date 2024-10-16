@@ -330,6 +330,8 @@ class AGVEnv(DirectRLEnv):
         self._agv.set_joint_effort_target(self.actions, joint_ids=self.actuated_dof_indices)
 
     def _get_observations(self) -> dict:
+        self.calculate_values()
+
         data_type = "rgb"
         tensor = self._rcam.data.output[data_type].clone()[:, :, :, :3] 
         image = tensor.permute(0, 3, 1, 2).float() / 255.0
@@ -365,19 +367,6 @@ class AGVEnv(DirectRLEnv):
             self.save_image = False
             self.image_counter += 1
 
-        def get_dist(right: bool = True):
-            hole_pos_w = self.hole_position(True)
-            curr_pin_pos_w = self.pin_position(True)
-
-            hole_xy = hole_pos_w[:, 0:1]
-            curr_pin_xy = curr_pin_pos_w[:, 0:1]
-            curr_xy_dist = self.euclidean_distance(hole_xy, curr_pin_xy)
-
-            hole_z = hole_pos_w[:, 2]
-            curr_pin_z = curr_pin_pos_w[:, 2]
-            curr_z_dist = hole_z - curr_pin_z
-            return torch.vstack((curr_xy_dist, curr_z_dist)).T
-
         observations = {
             "policy": {
                 "value": values,
@@ -395,9 +384,6 @@ class AGVEnv(DirectRLEnv):
                         self.pin_position(False) - self._agv.data.root_pos_w,
                         self.hole_position(True) - self._agv.data.root_pos_w,
                         self.hole_position(False) - self._agv.data.root_pos_w,
-                        # self.init_hole_pos - self._agv.data.root_pos_w,
-                        # self.init_pin_pos - self._agv.data.root_pos_w,
-                        # torch.cat((get_dist(True), get_dist(False)), dim=-1),
                     ),
                     dim=-1,
                 ),
@@ -411,14 +397,15 @@ class AGVEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
+        direction = "r"
         rew_pin_r = self.pin_reward(True)
-        correct_xy_rew = self.pin_correct_xy(True).int()
-        correct_z_rew = self.pin_correct_z(True).int()
-        correct_rew = self.pin_correct(True).int() * 10
+        correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int()
+        correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int()
+        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 10
 
         # penalty
         z_penalty = (
-            self.terminate_z().int()
+            self.current_values["terminate_z"].int()
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * -10
         )
@@ -439,8 +426,8 @@ class AGVEnv(DirectRLEnv):
         # self.joint_vel = self._agv.data.joint_vel
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        pin_out_of_hole = self.terminate_z()
-        pin_in_hole = self.pin_correct(True)
+        pin_out_of_hole = self.current_values["terminate_z"]
+        pin_in_hole = self.current_values["r_pin_correct"]
 
         return torch.logical_or(pin_in_hole, pin_out_of_hole), time_out
 
@@ -558,6 +545,39 @@ class AGVEnv(DirectRLEnv):
         # set into the physics simulation
         rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
+    def calculate_values(self):
+        r_pin_pos=self.pin_position(True)
+        l_pin_pos=self.pin_position(False)
+        r_hole_pos=self.hole_position(True)
+        l_hole_pos=self.hole_position(False)
+
+        r_distance=self.euclidean_distance(r_hole_pos, r_pin_pos)
+        l_distance=self.euclidean_distance(l_hole_pos, l_pin_pos)
+        r_xy_distance=self.euclidean_distance(r_hole_pos[:,:1], r_pin_pos[:,:1])
+        l_xy_distance=self.euclidean_distance(l_hole_pos[:,:1], l_pin_pos[:,:1])
+        r_z_distance=r_hole_pos[:,2] - r_pin_pos[:,2]
+        l_z_distance=l_hole_pos[:,2] - l_pin_pos[:,2]
+
+        self.current_values = dict(
+            r_pin_pos=r_pin_pos,
+            l_pin_pos=l_pin_pos,
+            r_hole_pos=r_hole_pos,
+            l_hole_pos=l_hole_pos,
+            r_distance=r_distance,
+            l_distance=l_distance,
+            r_xy_distance=r_xy_distance,
+            l_xy_distance=l_xy_distance,
+            r_z_distance=r_z_distance,
+            l_z_distance=l_z_distance,
+            r_pin_correct=r_distance < 0.01,
+            l_pin_correct=l_distance < 0.01,
+            r_pin_correct_xy=r_xy_distance < 0.01,
+            l_pin_correct_xy=l_xy_distance < 0.01,
+            r_pin_correct_z=r_z_distance < 0.01,
+            l_pin_correct_z=l_z_distance < 0.01,
+            terminate_z=torch.logical_and(r_pin_pos[:, 2] >= r_hole_pos[:, 2], r_xy_distance >= 0.01),
+        )
+
     def pin_position(self, right: bool = True, env_id = None):
         root_position: RigidObject = (
             self._agv.data.body_pos_w[env_id, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
@@ -588,43 +608,6 @@ class AGVEnv(DirectRLEnv):
         # niro [-0.5000,  0.0000,  1.1000]
         # lpin [0, .163, .514 / .479]
         return hole_pos_w
-
-    def terminate_z(self) -> torch.Tensor:
-        # l_hole_pos_w = hole_positions(env, False)
-        r_hole_pos_w = self.hole_position(True)
-        # l_pin_pos_w = pin_positions(env, False)
-        r_pin_pos_w = self.pin_position(True)
-
-        r_hole_xy = r_hole_pos_w[:, :1]
-        r_pin_xy = r_pin_pos_w[:, :1]
-
-        r_hole_z = r_hole_pos_w[:, 2]
-        r_pin_z = r_pin_pos_w[:, 2]
-
-        z_condition = r_pin_z >= r_hole_z
-
-        xy_distance = self.euclidean_distance(r_hole_xy, r_pin_xy)
-        xy_condition = xy_distance >= 0.01
-
-        return torch.logical_and(z_condition, xy_condition)
-
-    def pin_correct(self, right: bool = True):
-        hole_pos_w = self.hole_position(right)
-        pin_pos_w = self.pin_position(right)
-        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
-        return distance < 0.01
-    
-    def pin_correct_xy(self, right: bool = True):
-        hole_pos_w = self.hole_position(right)[:,:1]
-        pin_pos_w = self.pin_position(right)[:,:1]
-        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
-        return distance < 0.01
-    
-    def pin_correct_z(self, right: bool = True):
-        hole_pos_w = self.hole_position(right)[:,2]
-        pin_pos_w = self.pin_position(right)[:,2]
-        distance = self.euclidean_distance(hole_pos_w, pin_pos_w)
-        return distance < 0.01
 
     def euclidean_distance(self, src, dist):
         distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=src.ndim-1) + 1e-8)
@@ -658,33 +641,31 @@ class AGVEnv(DirectRLEnv):
         pin color
         """
 
-        hole_pos_w = self.hole_position(right)
-        curr_pin_pos_w = self.pin_position(right)
-        prev_pin_pos_w = self.prev_pos_w[f"{'r' if right else 'l'}_pin"]
+        direction = "r" if right else "l"
 
-        hole_xy = hole_pos_w[:, 0:1]
-        curr_pin_xy = curr_pin_pos_w[:, 0:1]
-        curr_xy_distance = self.euclidean_distance(hole_xy, curr_pin_xy)
+        hole_pos_w = self.current_values[f"{direction}_hole_pos"]
+        curr_pin_pos_w = self.current_values[f"{direction}_pin_pos"]
+        prev_pin_pos_w = self.prev_pos_w[f"{direction}_pin"]
+
+        curr_xy_distance = self.current_values[f"{direction}_xy_distance"]
         curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
 
         prev_pin_xy = prev_pin_pos_w[:, 0:1]
-        prev_xy_distance = self.euclidean_distance(hole_xy, prev_pin_xy)
+        prev_xy_distance = self.euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
         relative_xy_rew = prev_xy_distance - curr_xy_distance
 
-        hole_z = hole_pos_w[:, 2]
-        curr_pin_z = curr_pin_pos_w[:, 2]
-        curr_z_dist = hole_z - curr_pin_z
+        curr_z_dist = self.current_values[f"{direction}_z_distance"]
         curr_z_rew = self.init_z_distance_r - curr_z_dist
 
         prev_pin_z = prev_pin_pos_w[:, 2]
-        prev_z_dist = hole_z - prev_pin_z
+        prev_z_dist = hole_pos_w[:, 2] - prev_pin_z
         relative_z_rew = prev_z_dist - curr_z_dist
 
-        dist = self.euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
-        dist2 = self.euclidean_distance(curr_pin_pos_w, hole_pos_w)
-        rew = dist + dist2 - self.init_distance_r
+        dist1 = self.euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
+        dist2 = self.current_values[f"{direction}_distance"]
+        rew = dist1 + dist2 - self.init_distance_r
 
-        self.prev_pos_w[f"{'r' if right else 'l'}_pin"] = curr_pin_pos_w
+        self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
         reward = curr_xy_rew + curr_z_rew + relative_xy_rew*0.1 + relative_z_rew*0.1 - rew
 
         # UP = "\x1b[3A"
@@ -705,14 +686,6 @@ class AGVEnv(DirectRLEnv):
         l_pin_pos_w = self.pin_position(False, env_id)
         l_hole_pos_w = self.hole_position(False, env_id)
         r_hole_pos_w = self.hole_position(True, env_id)
-
-        # self.init_values[env_id] = {
-        #     "init_distance_l": self.euclidean_distance(l_pin_pos_w, l_hole_pos_w),
-        #     "init_distance_r": self.euclidean_distance(r_pin_pos_w, r_hole_pos_w),
-        #     "init_pin_pos": r_pin_pos_w,
-        #     "init_hole_pos": r_hole_pos_w,
-        #     "init_direction": r_hole_pos_w - r_pin_pos_w,
-        # }
 
         self.init_distance_l[env_id] = self.euclidean_distance(l_pin_pos_w, l_hole_pos_w)
         self.init_distance_r[env_id] = self.euclidean_distance(r_pin_pos_w, r_hole_pos_w)
