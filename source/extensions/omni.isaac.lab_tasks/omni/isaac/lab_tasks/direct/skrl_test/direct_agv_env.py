@@ -7,7 +7,6 @@ import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
 import torch
-from torchvision import transforms
 from omni.isaac.lab.assets import (
     Articulation,
     ArticulationCfg,
@@ -31,13 +30,12 @@ from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
+from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 from PIL import Image
 from pxr import Gf, UsdGeom
-from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
-from .agv_cfg import AGV_CFG, AGV_JOINT
-from ultralytics import YOLO
-from ultralytics import settings
+from ultralytics import YOLO, settings
 
+from .agv_cfg import AGV_CFG, AGV_JOINT
 
 settings.update({
     "runs_dir": "~/Desktop/repository/IsaacLab_Pitin/", 
@@ -363,7 +361,7 @@ class AGVEnv(DirectRLEnv):
 
                 # 이미지 생성 및 저장
                 img = Image.fromarray(image_array)
-                img.save(f"skrl_test/train_images/ff.png")
+                img.save("skrl_test/train_images/ff.png")
             self.save_image = False
             self.image_counter += 1
 
@@ -393,7 +391,7 @@ class AGVEnv(DirectRLEnv):
             # "critic": self._get_states(),
         }
 
-        print(observations["policy"]["critic"].shape)
+        # print(observations["policy"]["critic"].shape)
 
         return observations
 
