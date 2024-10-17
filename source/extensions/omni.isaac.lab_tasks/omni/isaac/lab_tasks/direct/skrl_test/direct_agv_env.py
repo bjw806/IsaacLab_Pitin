@@ -254,7 +254,7 @@ class AGVEnv(DirectRLEnv):
                 ),
             ),
             # value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(12,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(24,)),
         )
 
         if not self.cfg.num_states:
@@ -384,6 +384,8 @@ class AGVEnv(DirectRLEnv):
                         self.pin_position(False) - self._agv.data.root_pos_w,
                         self.hole_position(True) - self._agv.data.root_pos_w,
                         self.hole_position(False) - self._agv.data.root_pos_w,
+                        self.pin_velocity(True),
+                        self.pin_velocity(False),
                     ),
                     dim=-1,
                 ),
@@ -391,17 +393,17 @@ class AGVEnv(DirectRLEnv):
             # "critic": self._get_states(),
         }
 
-        # print(observations["policy"]["critic"].shape)
+        print(observations["policy"]["critic"].shape)
 
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         # reward
         direction = "r"
-        rew_pin_r = self.pin_reward(True)
+        rew_pin_r = self.pin_reward(True)**2
         correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int()
         correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int()
-        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 10
+        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 1000
 
         # penalty
         z_penalty = (
@@ -409,7 +411,7 @@ class AGVEnv(DirectRLEnv):
             # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
             * -10
         )
-        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -0.5
+        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -0.1
 
         # sum
         total_reward = (
@@ -419,7 +421,6 @@ class AGVEnv(DirectRLEnv):
             + contact_penalty
             + correct_xy_rew
             + correct_z_rew
-            + 0.1
         )
 
         UP = "\x1b[3A"
@@ -554,21 +555,25 @@ class AGVEnv(DirectRLEnv):
         rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
     def calculate_values(self):
-        r_pin_pos=self.pin_position(True)
-        l_pin_pos=self.pin_position(False)
-        r_hole_pos=self.hole_position(True)
-        l_hole_pos=self.hole_position(False)
+        r_pin_pos = self.pin_position(True)
+        l_pin_pos = self.pin_position(False)
+        r_pin_vel = self.pin_velocity(True)
+        l_pin_vel = self.pin_velocity(False)
+        r_hole_pos = self.hole_position(True)
+        l_hole_pos = self.hole_position(False)
 
-        r_distance=self.euclidean_distance(r_hole_pos, r_pin_pos)
-        l_distance=self.euclidean_distance(l_hole_pos, l_pin_pos)
-        r_xy_distance=self.euclidean_distance(r_hole_pos[:,:1], r_pin_pos[:,:1])
-        l_xy_distance=self.euclidean_distance(l_hole_pos[:,:1], l_pin_pos[:,:1])
-        r_z_distance=r_hole_pos[:,2] - r_pin_pos[:,2]
-        l_z_distance=l_hole_pos[:,2] - l_pin_pos[:,2]
+        r_distance = self.euclidean_distance(r_hole_pos, r_pin_pos)
+        l_distance = self.euclidean_distance(l_hole_pos, l_pin_pos)
+        r_xy_distance = self.euclidean_distance(r_hole_pos[:,:1], r_pin_pos[:,:1])
+        l_xy_distance = self.euclidean_distance(l_hole_pos[:,:1], l_pin_pos[:,:1])
+        r_z_distance = r_hole_pos[:,2] - r_pin_pos[:,2]
+        l_z_distance = l_hole_pos[:,2] - l_pin_pos[:,2]
 
         self.current_values = dict(
             r_pin_pos=r_pin_pos,
             l_pin_pos=l_pin_pos,
+            r_pin_vel=r_pin_vel,
+            l_pin_vel=l_pin_vel,
             r_hole_pos=r_hole_pos,
             l_hole_pos=l_hole_pos,
             r_distance=r_distance,
@@ -577,8 +582,8 @@ class AGVEnv(DirectRLEnv):
             l_xy_distance=l_xy_distance,
             r_z_distance=r_z_distance,
             l_z_distance=l_z_distance,
-            r_pin_correct=r_distance < 0.01,
-            l_pin_correct=l_distance < 0.01,
+            r_pin_correct=torch.logical_and(r_distance < 0.01, torch.all(r_pin_vel == 0, dim=1)),
+            l_pin_correct=torch.logical_and(l_distance < 0.01, torch.all(l_pin_vel == 0, dim=1)),
             r_pin_correct_xy=r_xy_distance < 0.01,
             l_pin_correct_xy=l_xy_distance < 0.01,
             r_pin_correct_z=r_z_distance < 0.01,
@@ -598,6 +603,14 @@ class AGVEnv(DirectRLEnv):
         )  # 0.479
         pin_pos_w = root_position + pin_rel
         return pin_pos_w
+    
+    def pin_velocity(self, right: bool = True, env_id = None):
+        pin_vel_w: RigidObject = (
+            self._agv.data.body_vel_w[env_id, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
+            if env_id is not None
+            else self._agv.data.body_vel_w[:, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
+        )
+        return pin_vel_w
 
     def hole_position(self, right: bool = True, env_id = None):
         # niro: RigidObject = self.scene.rigid_objects["niro"]
