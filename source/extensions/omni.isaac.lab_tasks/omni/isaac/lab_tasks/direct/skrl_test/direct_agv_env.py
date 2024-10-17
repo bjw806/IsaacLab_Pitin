@@ -398,18 +398,20 @@ class AGVEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # reward
         direction = "r"
-        rew_pin_r = self.pin_reward(True)**2
-        correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int()
-        correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int()
-        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 1000
+        rew_pin = self.pin_reward(True)
+        rew_pin_r = torch.where(rew_pin < 0, -((rew_pin - 1) ** 2), (rew_pin + 1) ** 2)
+
+        correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
+        # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
+        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 1000000
 
         # penalty
         z_penalty = (
             self.current_values["terminate_z"].int()
-            # * self.euclidean_distance(self.pin_position(True), self.hole_position(True))
-            * -10
+            * -100
         )
-        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -0.1
+        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -1
+        torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1) * -0.1
 
         # sum
         total_reward = (
@@ -417,8 +419,9 @@ class AGVEnv(DirectRLEnv):
             + correct_rew
             + z_penalty
             + contact_penalty
+            + torque_penalty
             + correct_xy_rew
-            + correct_z_rew
+            # + correct_z_rew
         )
 
         UP = "\x1b[3A"
@@ -567,7 +570,10 @@ class AGVEnv(DirectRLEnv):
         r_z_distance = r_hole_pos[:,2] - r_pin_pos[:,2]
         l_z_distance = l_hole_pos[:,2] - l_pin_pos[:,2]
 
+        agv_torque = self._agv.data.applied_torque[:,self.actuated_dof_indices]
+
         self.current_values = dict(
+            agv_torque=agv_torque,
             r_pin_pos=r_pin_pos,
             l_pin_pos=l_pin_pos,
             r_pin_vel=r_pin_vel,
@@ -685,7 +691,7 @@ class AGVEnv(DirectRLEnv):
         rew = dist1 + dist2 - self.init_distance_r
 
         self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
-        reward = curr_xy_rew + curr_z_rew + relative_xy_rew + relative_z_rew - rew
+        reward = curr_xy_rew + curr_z_rew - rew
 
         # UP = "\x1b[3A"
         # print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
