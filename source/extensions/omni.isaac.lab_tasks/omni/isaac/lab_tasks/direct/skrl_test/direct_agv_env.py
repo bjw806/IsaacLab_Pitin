@@ -363,7 +363,7 @@ class AGVEnv(DirectRLEnv):
                 img = Image.fromarray(image_array)
                 img.save("skrl_test/train_images/ff.png")
             self.save_image = False
-            self.image_counter += 1
+            # self.image_counter += 1
 
         observations = {
             "policy": {
@@ -398,8 +398,7 @@ class AGVEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # reward
         direction = "r"
-        rew_pin = self.pin_reward(True)
-        rew_pin_r = torch.where(rew_pin < 0, -((rew_pin - 1) ** 2), (rew_pin + 1) ** 2)
+        rew_pin_r = self.pin_reward(True)
 
         correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
         # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
@@ -426,7 +425,7 @@ class AGVEnv(DirectRLEnv):
 
         UP = "\x1b[3A"
         print(
-            f"\npin: {round(rew_pin_r[0].item(), 3)} correct: {round(correct_rew[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+            f"\npin: {round(rew_pin_r[0].item(), 3)} torque: {round(torque_penalty[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
         )
         return total_reward
 
@@ -596,7 +595,7 @@ class AGVEnv(DirectRLEnv):
         )
 
     def pin_position(self, right: bool = True, env_id = None):
-        root_position: RigidObject = (
+        root_position: torch.Tensor = (
             self._agv.data.body_pos_w[env_id, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
             if env_id is not None
             else self._agv.data.body_pos_w[:, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
@@ -609,7 +608,7 @@ class AGVEnv(DirectRLEnv):
         return pin_pos_w
     
     def pin_velocity(self, right: bool = True, env_id = None):
-        pin_vel_w: RigidObject = (
+        pin_vel_w: torch.Tensor = (
             self._agv.data.body_vel_w[env_id, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
             if env_id is not None
             else self._agv.data.body_vel_w[:, self._RPIN_idx[0] if right else self._LPIN_idx[0], :]
@@ -672,26 +671,37 @@ class AGVEnv(DirectRLEnv):
         curr_pin_pos_w = self.current_values[f"{direction}_pin_pos"]
         prev_pin_pos_w = self.prev_pos_w[f"{direction}_pin"]
 
-        curr_xy_distance = self.current_values[f"{direction}_xy_distance"]
-        curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
+        # curr_xy_distance = self.current_values[f"{direction}_xy_distance"]
+        # curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
 
-        prev_pin_xy = prev_pin_pos_w[:, 0:1]
-        prev_xy_distance = self.euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
-        relative_xy_rew = prev_xy_distance - curr_xy_distance
+        # prev_pin_xy = prev_pin_pos_w[:, 0:1]
+        # prev_xy_distance = self.euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
+        # relative_xy_rew = prev_xy_distance - curr_xy_distance
 
-        curr_z_dist = self.current_values[f"{direction}_z_distance"]
-        curr_z_rew = self.init_z_distance_r - curr_z_dist
+        # curr_z_dist = self.current_values[f"{direction}_z_distance"]
+        # curr_z_rew = self.init_z_distance_r - curr_z_dist
 
-        prev_pin_z = prev_pin_pos_w[:, 2]
-        prev_z_dist = hole_pos_w[:, 2] - prev_pin_z
-        relative_z_rew = prev_z_dist - curr_z_dist
+        # prev_pin_z = prev_pin_pos_w[:, 2]
+        # prev_z_dist = hole_pos_w[:, 2] - prev_pin_z
+        # relative_z_rew = prev_z_dist - curr_z_dist
 
         dist1 = self.euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
         dist2 = self.current_values[f"{direction}_distance"]
-        rew = dist1 + dist2 - self.init_distance_r
+        dist3 = dist1 + dist2 - self.init_distance_r
+        if (dist3 < 0).any():
+            raise ValueError("distance is negative")
+        rew = (dist3 + 1) ** 2
 
         self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
-        reward = curr_xy_rew + curr_z_rew - rew
+
+        curr_xyz_dist = self.current_values[f"{direction}_distance"]
+        xyz_rew = self.power_reward(self.init_distance_r - curr_xyz_dist)
+
+        prev_xyz_dist = self.euclidean_distance(hole_pos_w, prev_pin_pos_w)
+        relative_xyz_dist = prev_xyz_dist - curr_xyz_dist
+        relative_xyz_rew = self.power_reward(relative_xyz_dist)
+
+        reward = xyz_rew + relative_xyz_rew*0.5 - rew
 
         # UP = "\x1b[3A"
         # print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
@@ -699,6 +709,10 @@ class AGVEnv(DirectRLEnv):
         # )
 
         return reward
+    
+    def power_reward(self, reward) -> torch.Tensor:
+        r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
+        return r
 
     def pin_direction_reward(self, hole, pin) -> torch.Tensor:
         current_direction = pin - hole
