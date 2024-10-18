@@ -71,7 +71,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_actions = 3
-    num_channels = 4
+    num_channels = 1
     # num_states = 63
     # events = AGVEventCfg()
 
@@ -251,8 +251,8 @@ class AGVEnv(DirectRLEnv):
                     self.cfg.num_channels,
                 ),
             ),
-            # value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(24,)),
+            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
         )
 
         if not self.cfg.num_states:
@@ -340,17 +340,17 @@ class AGVEnv(DirectRLEnv):
         results = self.yolo.predict(image, embed=[22], verbose=False)
         features = torch.stack(results)
 
-        self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
-        self.serial_frames[:, :, -1] = features
+        # self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
+        # self.serial_frames[:, :, -1] = features
 
-        # values = torch.cat(
-        #     (
-        #         math_utils.normalize(self._agv.data.joint_pos),
-        #         math_utils.normalize(self._agv.data.joint_vel),
-        #         math_utils.normalize(self._agv.data.joint_acc),
-        #     ),
-        #     dim=-1,
-        # )
+        values = torch.cat(
+            (
+                math_utils.normalize(self._agv.data.joint_pos),
+                math_utils.normalize(self._agv.data.joint_vel),
+                math_utils.normalize(self._agv.data.joint_acc),
+            ),
+            dim=-1,
+        )
 
         if self.cfg.write_image_to_file:
             array = image.cpu().numpy()
@@ -367,11 +367,11 @@ class AGVEnv(DirectRLEnv):
 
         observations = {
             "policy": {
-                # "value": values,
-                "image": self.serial_frames,
+                "value": values,
+                "image": features,
                 "critic": torch.cat(
                     (
-                        # values,
+                        values,
                         # math_utils.normalize(
                         #     self._agv.data.body_state_w[
                         #         :, self.actuated_dof_indices
