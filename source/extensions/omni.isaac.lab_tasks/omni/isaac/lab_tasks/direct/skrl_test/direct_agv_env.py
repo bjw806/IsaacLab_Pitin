@@ -402,7 +402,10 @@ class AGVEnv(DirectRLEnv):
 
         correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
         # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
-        correct_rew = self.current_values[f"{direction}_pin_correct"].int() * 1000000
+        correct_rew = (
+            self.current_values[f"{direction}_pin_correct"].int()
+            * torch.clamp(1 / torch.sum(self.current_values[f"{direction}_pin_vel"] + 1e-8, dim=1), max=1000000)
+        )
 
         # penalty
         z_penalty = (
@@ -585,8 +588,8 @@ class AGVEnv(DirectRLEnv):
             l_xy_distance=l_xy_distance,
             r_z_distance=r_z_distance,
             l_z_distance=l_z_distance,
-            r_pin_correct=torch.logical_and(r_distance < 0.01, torch.all(r_pin_vel == 0, dim=1)),
-            l_pin_correct=torch.logical_and(l_distance < 0.01, torch.all(l_pin_vel == 0, dim=1)),
+            r_pin_correct=r_distance < 0.01,
+            l_pin_correct=l_distance < 0.01,
             r_pin_correct_xy=r_xy_distance < 0.01,
             l_pin_correct_xy=l_xy_distance < 0.01,
             r_pin_correct_z=r_z_distance < 0.01,
