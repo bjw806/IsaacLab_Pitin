@@ -71,7 +71,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_actions = 3
-    num_channels = 1
+    num_channels = 4
     # num_states = 63
     # events = AGVEventCfg()
 
@@ -248,7 +248,7 @@ class AGVEnv(DirectRLEnv):
                 high=np.inf,
                 shape=(
                     512,
-                    self.cfg.num_channels,
+                    # self.cfg.num_channels,
                 ),
             ),
             value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
@@ -400,20 +400,24 @@ class AGVEnv(DirectRLEnv):
         direction = "r"
         rew_pin_r = self.pin_reward(True)
 
-        correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
+        # correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
         # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
         correct_rew = (
             self.current_values[f"{direction}_pin_correct"].int()
-            * torch.clamp(1 / torch.sum(self.current_values[f"{direction}_pin_vel"] + 1e-8, dim=1), max=1000000)
+            * torch.clamp(
+                1 / (self.current_values[f"{direction}_pin_vel"] + 1e-8),
+                max=10000000,
+                min=1000
+            )
         )
 
         # penalty
         z_penalty = (
             self.current_values["terminate_z"].int()
-            * -100
+            * -10
         )
-        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -1
-        torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1) * -0.1
+        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -.1
+        # torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1) * -0.00003
 
         # sum
         total_reward = (
@@ -421,14 +425,14 @@ class AGVEnv(DirectRLEnv):
             + correct_rew
             + z_penalty
             + contact_penalty
-            + torque_penalty
-            + correct_xy_rew
+            # + torque_penalty
+            # + correct_xy_rew
             # + correct_z_rew
         )
 
         UP = "\x1b[3A"
         print(
-            f"\npin: {round(rew_pin_r[0].item(), 3)} torque: {round(torque_penalty[0].item(), 2)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+            f"\npin: {round(rew_pin_r[0].item(), 3)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
         )
         return total_reward
 
@@ -573,13 +577,17 @@ class AGVEnv(DirectRLEnv):
         l_z_distance = l_hole_pos[:,2] - l_pin_pos[:,2]
 
         agv_torque = self._agv.data.applied_torque[:,self.actuated_dof_indices]
+        r_pin_lv = r_pin_vel[..., :3]
+        r_pin_v_norm = torch.norm(r_pin_lv, dim=-1)
+        l_pin_lv = l_pin_vel[..., :3]
+        l_pin_v_norm = torch.norm(l_pin_lv, dim=-1)
 
         self.current_values = dict(
             agv_torque=agv_torque,
             r_pin_pos=r_pin_pos,
             l_pin_pos=l_pin_pos,
-            r_pin_vel=r_pin_vel,
-            l_pin_vel=l_pin_vel,
+            r_pin_vel=r_pin_v_norm,
+            l_pin_vel=l_pin_v_norm,
             r_hole_pos=r_hole_pos,
             l_hole_pos=l_hole_pos,
             r_distance=r_distance,
@@ -693,25 +701,25 @@ class AGVEnv(DirectRLEnv):
         dist3 = dist1 + dist2 - self.init_distance_r
         if (dist3 < 0).any():
             raise ValueError("distance is negative")
-        rew = (dist3 + 1) ** 2
+        rew = dist3 ** 3
 
         self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
 
         curr_xyz_dist = self.current_values[f"{direction}_distance"]
-        xyz_rew = self.power_reward(self.init_distance_r - curr_xyz_dist)
+        xyz_rew = (self.init_distance_r - curr_xyz_dist) ** 3
 
-        prev_xyz_dist = self.euclidean_distance(hole_pos_w, prev_pin_pos_w)
-        relative_xyz_dist = prev_xyz_dist - curr_xyz_dist
-        relative_xyz_rew = self.power_reward(relative_xyz_dist)
+        # prev_xyz_dist = self.euclidean_distance(hole_pos_w, prev_pin_pos_w)
+        # relative_xyz_dist = prev_xyz_dist - curr_xyz_dist
+        # relative_xyz_rew = relative_xyz_dist ** 3
 
-        reward = xyz_rew + relative_xyz_rew*0.5 - rew
+        reward = xyz_rew - rew
 
         # UP = "\x1b[3A"
         # print(  # xy: {curr_xy_rew[0]} z: {curr_z_rew[0]} rxy: {round(relative_xy_rew[0].item(), 3)} rz: {round(relative_z_rew[0].item(), 3)}
         #     f"\nrew: {round(reward[0].item(), 4)}_\n{UP}\r"
         # )
 
-        return reward
+        return reward * 1000
     
     def power_reward(self, reward) -> torch.Tensor:
         r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
