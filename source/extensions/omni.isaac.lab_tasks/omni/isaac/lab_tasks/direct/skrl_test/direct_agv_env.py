@@ -468,10 +468,21 @@ class AGVEnv(DirectRLEnv):
             dtype=torch.float, 
             device=self.device
         )
-        if self.random_pin_position:
-            self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
-        if self.random_hole_position:
-            self.randomize_object_position(env_ids, (-0.1, 0.1), (-0.03, 0.03), "niro")
+        
+        self.randomize_joints_by_offset(
+            env_ids,
+            (-0.03, 0.03)
+            if self.random_pin_position
+            else (0, 0),
+            "agv"
+        )
+        
+        self.randomize_object_position(
+            env_ids,
+            (-0.1, 0.1) if self.random_hole_position else (0, 0),
+            (-0.03, 0.03) if self.random_hole_position else (0, 0), 
+            "niro"
+        )
 
         # set joint positions with some noise
         # joint_pos, joint_vel = self._agv.data.default_joint_pos.clone(), self._agv.data.default_joint_vel.clone()
