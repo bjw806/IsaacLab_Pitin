@@ -227,6 +227,17 @@ class AGVEnv(DirectRLEnv):
         )
 
         self.idx = 1
+        self.random_color = False
+        self.random_pin_position = False
+        self.random_hole_position = False
+        self.reward_weights = {
+            "rew_pin_r": 0,
+            "correct_xy_rew": 0,
+            "correct_rew": 0,
+            "z_penalty": 0,
+            "contact_penalty": 0,
+            "torque_penalty": 0,
+        }
 
     def close(self):
         # print(2)
@@ -314,7 +325,6 @@ class AGVEnv(DirectRLEnv):
         self.my_visualizer = define_markers()
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # print(5)
         self.actions = self.action_scale * actions.clone()
 
     def _apply_action(self) -> None:
@@ -400,7 +410,14 @@ class AGVEnv(DirectRLEnv):
         direction = "r"
         rew_pin_r = self.pin_reward(True)
 
-        # correct_xy_rew = self.current_values[f"{direction}_pin_correct_xy"].int() * 10
+        correct_xy_rew = (
+            self.current_values[f"{direction}_pin_correct_xy"].int()
+            * torch.clamp(
+                1 / (self.current_values[f"{direction}_pin_vel"] + 1e-8),
+                max=10000000,
+                min=100
+            )
+        )
         # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
         correct_rew = (
             self.current_values[f"{direction}_pin_correct"].int()
@@ -412,21 +429,17 @@ class AGVEnv(DirectRLEnv):
         )
 
         # penalty
-        z_penalty = (
-            self.current_values["terminate_z"].int()
-            * -10
-        )
-        contact_penalty = self.is_undesired_contacts(self._niro_contact).int() * -.1
-        # torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1) * -0.00003
-
+        z_penalty = self.current_values["terminate_z"].int()
+        contact_penalty = self.is_undesired_contacts(self._niro_contact).int()
+        torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1)
         # sum
         total_reward = (
-            rew_pin_r
-            + correct_rew
-            + z_penalty
-            + contact_penalty
-            # + torque_penalty
-            # + correct_xy_rew
+            rew_pin_r * self.reward_weights["rew_pin_r"]
+            + correct_rew * self.reward_weights["correct_rew"]
+            + z_penalty * self.reward_weights["z_penalty"]
+            + contact_penalty * self.reward_weights["contact_penalty"]
+            + torque_penalty * self.reward_weights["torque_penalty"]
+            + correct_xy_rew * self.reward_weights["correct_xy_rew"]
             # + correct_z_rew
         )
 
@@ -449,14 +462,16 @@ class AGVEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
-        
+        self.curriculum_switch()
         self.serial_frames = torch.zeros(
             self.serial_frames.shape, 
             dtype=torch.float, 
             device=self.device
         )
-        self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
-        self.randomize_object_position(env_ids, (-0.1, 0.1), (-0.03, 0.03), "niro")
+        if self.random_pin_position:
+            self.randomize_joints_by_offset(env_ids, (-0.03, 0.03), "agv")
+        if self.random_hole_position:
+            self.randomize_object_position(env_ids, (-0.1, 0.1), (-0.03, 0.03), "niro")
 
         # set joint positions with some noise
         # joint_pos, joint_vel = self._agv.data.default_joint_pos.clone(), self._agv.data.default_joint_vel.clone()
@@ -475,9 +490,10 @@ class AGVEnv(DirectRLEnv):
 
         for idx, object_name in enumerate(object_names):
             for env_id in env_ids:
-                random_color = Gf.Vec3f(random.random(), random.random(), random.random())
-                color_spec = stage.GetAttributeAtPath(f"/World/envs/env_{env_id}/{object_name}/Looks/{material_names[idx]}/{property_names[idx]}")
-                color_spec.Set(random_color)
+                if self.random_color:
+                    color = Gf.Vec3f(random.random(), random.random(), random.random())
+                    color_spec = stage.GetAttributeAtPath(f"/World/envs/env_{env_id}/{object_name}/Looks/{material_names[idx]}/{property_names[idx]}")
+                    color_spec.Set(color)
                 self.initial_pin_position(env_id)
 
     """
@@ -699,8 +715,6 @@ class AGVEnv(DirectRLEnv):
         dist1 = self.euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
         dist2 = self.current_values[f"{direction}_distance"]
         dist3 = dist1 + dist2 - self.init_distance_r
-        if (dist3 < 0).any():
-            raise ValueError("distance is negative")
         rew = dist3 ** 3
 
         self.prev_pos_w[f"{direction}_pin"] = curr_pin_pos_w
@@ -719,7 +733,7 @@ class AGVEnv(DirectRLEnv):
         #     f"\nrew: {round(reward[0].item(), 4)}_\n{UP}\r"
         # )
 
-        return reward * 1000
+        return reward
     
     def power_reward(self, reward) -> torch.Tensor:
         r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
@@ -783,6 +797,35 @@ class AGVEnv(DirectRLEnv):
         qw = world_quat.real
 
         return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+    
+    def curriculum_switch(self):
+        if self.common_step_counter < 50000:
+            self.reward_weights = {
+                "rew_pin_r": 1000,
+                "correct_xy_rew": 1,
+                "correct_rew": 0,
+                "z_penalty": -100,
+                "contact_penalty": -100,
+                "torque_penalty": 0,
+            }
+        elif 50000 < self.common_step_counter < 100000:
+            self.random_color = True
+            self.reward_weights["torque_penalty"] = -0.00003
+        elif 100000 < self.common_step_counter < 150000:
+            self.random_hole_position = True
+            self.reward_weights = {
+                "rew_pin_r": 1000,
+                "correct_xy_rew": 0,
+                "correct_rew": 1,
+                "z_penalty": -10,
+                "contact_penalty": 0,
+                "torque_penalty": 0,
+            }
+        elif 150000 < self.common_step_counter < 200000:
+            self.random_pin_position = True
+            self.reward_weights["contact_penalty"] = -.1
+        elif 200000 < self.common_step_counter < 250000:
+            self.reward_weights["torque_penalty"] = -0.00003
 
 
 @torch.jit.script
