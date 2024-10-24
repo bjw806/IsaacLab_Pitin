@@ -31,6 +31,7 @@ from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
+from omni.isaac.debug_draw import _debug_draw
 from PIL import Image
 from pxr import Gf, UsdGeom
 from ultralytics import YOLO, settings
@@ -232,11 +233,13 @@ class AGVEnv(DirectRLEnv):
         self.random_hole_position = False
         self.reward_weights = {
             "rew_pin_r": 0,
+            "rew_pin_r_xy": 0,
             "correct_xy_rew": 0,
             "correct_rew": 0,
             "z_penalty": 0,
             "contact_penalty": 0,
             "torque_penalty": 0,
+            "r_z_penalty": 0,
         }
 
     def close(self):
@@ -259,7 +262,7 @@ class AGVEnv(DirectRLEnv):
                 high=np.inf,
                 shape=(
                     512,
-                    # self.cfg.num_channels,
+                    self.cfg.num_channels,
                 ),
             ),
             value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
@@ -350,8 +353,8 @@ class AGVEnv(DirectRLEnv):
         results = self.yolo.predict(image, embed=[22], verbose=False)
         features = torch.stack(results)
 
-        # self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
-        # self.serial_frames[:, :, -1] = features
+        self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
+        self.serial_frames[:, :, -1] = features
 
         values = torch.cat(
             (
@@ -378,7 +381,7 @@ class AGVEnv(DirectRLEnv):
         observations = {
             "policy": {
                 "value": values,
-                "image": features,
+                "image": self.serial_frames,
                 "critic": torch.cat(
                     (
                         values,
@@ -409,13 +412,15 @@ class AGVEnv(DirectRLEnv):
         # reward
         direction = "r"
         rew_pin_r = self.pin_reward(True)
+        rew_pin_r_xy = -(self.current_values[f"{direction}_xy_distance"] ** 2)
+        r_z_penalty = self.current_values["r_z_distance"] ** 3
 
         correct_xy_rew = (
             self.current_values[f"{direction}_pin_correct_xy"].int()
             * torch.clamp(
                 1 / (self.current_values[f"{direction}_pin_vel"] + 1e-8),
-                max=10000000,
-                min=100
+                max=10000,
+                min=10
             )
         )
         # correct_z_rew = self.current_values[f"{direction}_pin_correct_z"].int() * 10
@@ -435,17 +440,25 @@ class AGVEnv(DirectRLEnv):
         # sum
         total_reward = (
             rew_pin_r * self.reward_weights["rew_pin_r"]
+            + rew_pin_r_xy * self.reward_weights["rew_pin_r_xy"]
             + correct_rew * self.reward_weights["correct_rew"]
             + z_penalty * self.reward_weights["z_penalty"]
             + contact_penalty * self.reward_weights["contact_penalty"]
             + torque_penalty * self.reward_weights["torque_penalty"]
             + correct_xy_rew * self.reward_weights["correct_xy_rew"]
+            + r_z_penalty * self.reward_weights["r_z_penalty"]
+            # + self.episode_length_buf * 0.1
             # + correct_z_rew
         )
 
         UP = "\x1b[3A"
         print(
-            f"\npin: {round(rew_pin_r[0].item(), 3)} z: {round(z_penalty[0].item(), 2)} contact: {round(contact_penalty[0].item(), 2)} total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
+            f"\npin: {round(rew_pin_r[0].item() * self.reward_weights['rew_pin_r'], 3)} "
+            f"xy: {round(rew_pin_r_xy[0].item() * self.reward_weights['rew_pin_r_xy'], 3)} "
+            f"z: {round(z_penalty[0].item() * self.reward_weights['z_penalty'], 2)} "
+            f"zr: {round(r_z_penalty[0].item() * self.reward_weights['r_z_penalty'], 2)} "
+            f"contact: {round(contact_penalty[0].item() * self.reward_weights['contact_penalty'], 2)} "
+            f"total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
         )
         return total_reward
 
@@ -598,8 +611,8 @@ class AGVEnv(DirectRLEnv):
 
         r_distance = self.euclidean_distance(r_hole_pos, r_pin_pos)
         l_distance = self.euclidean_distance(l_hole_pos, l_pin_pos)
-        r_xy_distance = self.euclidean_distance(r_hole_pos[:,:1], r_pin_pos[:,:1])
-        l_xy_distance = self.euclidean_distance(l_hole_pos[:,:1], l_pin_pos[:,:1])
+        r_xy_distance = self.euclidean_distance(r_hole_pos[:,:2], r_pin_pos[:,:2])
+        l_xy_distance = self.euclidean_distance(l_hole_pos[:,:2], l_pin_pos[:,:2])
         r_z_distance = r_hole_pos[:,2] - r_pin_pos[:,2]
         l_z_distance = l_hole_pos[:,2] - l_pin_pos[:,2]
 
@@ -631,6 +644,12 @@ class AGVEnv(DirectRLEnv):
             l_pin_correct_z=l_z_distance < 0.01,
             terminate_z=torch.logical_and(r_pin_pos[:, 2] >= r_hole_pos[:, 2], r_xy_distance >= 0.01),
         )
+
+        pin_list = [r_pin_pos[i].tolist() for i in range(self.num_envs)]
+        hole_list = [r_hole_pos[i].tolist() for i in range(self.num_envs)]
+        draw = _debug_draw.acquire_debug_draw_interface()
+        draw.clear_lines()
+        draw.draw_lines(pin_list, hole_list, [(1, 1, 1, 1)] * self.num_envs, [5] * self.num_envs)
 
     def pin_position(self, right: bool = True, env_id = None):
         root_position: torch.Tensor = (
@@ -708,9 +727,6 @@ class AGVEnv(DirectRLEnv):
         hole_pos_w = self.current_values[f"{direction}_hole_pos"]
         curr_pin_pos_w = self.current_values[f"{direction}_pin_pos"]
         prev_pin_pos_w = self.prev_pos_w[f"{direction}_pin"]
-
-        # curr_xy_distance = self.current_values[f"{direction}_xy_distance"]
-        # curr_xy_rew = self.init_xy_distance_r - curr_xy_distance
 
         # prev_pin_xy = prev_pin_pos_w[:, 0:1]
         # prev_xy_distance = self.euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
@@ -810,32 +826,53 @@ class AGVEnv(DirectRLEnv):
         return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
     
     def curriculum_switch(self):
-        if self.common_step_counter < 50000:
+        multiplier = 10
+
+        if self.common_step_counter < 1000 * multiplier:
             self.reward_weights = {
-                "rew_pin_r": 1000,
-                "correct_xy_rew": 1,
+                "rew_pin_r": 0,
+                "rew_pin_r_xy": 100,
+                "correct_xy_rew": 0,
                 "correct_rew": 0,
                 "z_penalty": -100,
-                "contact_penalty": -100,
+                "contact_penalty": 0,
                 "torque_penalty": 0,
+                "r_z_penalty": 100,
             }
-        elif 50000 < self.common_step_counter < 100000:
+        elif 2000 * multiplier < self.common_step_counter < 3000 * multiplier:
             self.random_color = True
             self.reward_weights["torque_penalty"] = -0.00003
-        elif 100000 < self.common_step_counter < 150000:
+        elif 3000 * multiplier < self.common_step_counter < 4000 * multiplier:
             self.random_hole_position = True
             self.reward_weights = {
                 "rew_pin_r": 1000,
+                "rew_pin_r_xy": 0,
                 "correct_xy_rew": 0,
-                "correct_rew": 1,
-                "z_penalty": -10,
+                "correct_rew": 0,
+                "z_penalty": -100,
                 "contact_penalty": 0,
                 "torque_penalty": 0,
+                "r_z_penalty": -100,
             }
-        elif 150000 < self.common_step_counter < 200000:
+        elif 4000 * multiplier < self.common_step_counter < 5000 * multiplier:
+            self.random_color = True
+            self.reward_weights["torque_penalty"] = -0.00003
+        elif 5000 * multiplier < self.common_step_counter < 6000 * multiplier:
+            self.random_hole_position = True
+            self.reward_weights = {
+                "rew_pin_r": 1000,
+                "rew_pin_r_xy": 0,
+                "correct_xy_rew": 0,
+                "correct_rew": 1,
+                "z_penalty": -100,
+                "contact_penalty": 0,
+                "torque_penalty": 0,
+                "r_z_penalty": 0,
+            }
+        elif 6000 * multiplier < self.common_step_counter < 6000 * multiplier:
             self.random_pin_position = True
             self.reward_weights["contact_penalty"] = -.1
-        elif 200000 < self.common_step_counter < 250000:
+        elif 7000 * multiplier < self.common_step_counter < 8000 * multiplier:
             self.reward_weights["torque_penalty"] = -0.00003
 
 

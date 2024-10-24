@@ -16,94 +16,68 @@ from torch.cuda.amp import autocast
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
 
 
-# define models (stochastic and deterministic models) using mixins
-class Policy(GaussianMixin, Model):
-    def __init__(
-        self,
-        observation_space,
-        action_space,
-        device,
-        clip_actions=False,
-        clip_log_std=True,
-        min_log_std=-20,
-        max_log_std=2,
-        reduction="sum",
-    ):
+class Shared(GaussianMixin, DeterministicMixin, Model):
+    def __init__(self, observation_space, action_space, device, clip_actions=False,
+                 clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum"):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
+        DeterministicMixin.__init__(self, clip_actions)
 
-        self.net_cnn = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=7, stride=3),
+        self.net_features = nn.Sequential(
+            nn.Conv1d(512, 512, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(16, 32, kernel_size=5, stride=2),
+            nn.Dropout(0.2),
+            nn.Conv1d(512, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1),
+            nn.Dropout(0.2),
+            nn.Conv1d(256, 256, kernel_size=3, stride=1),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
             nn.Flatten(),
         )
 
-        self.net_local = nn.Sequential(
-            nn.Linear(3200, 512),
-            nn.ReLU(),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Linear(128, 10), # x, y, z, width, height x2
+        self.net_fc = nn.Sequential(
+            nn.Linear(512 + 30, 128),
+            nn.BatchNorm1d(128),
+            nn.ELU(),
+            nn.Dropout(0.2),
+
+            nn.Linear(128, 32),
+            nn.BatchNorm1d(32),
+            nn.ELU(),
+            nn.Dropout(0.2),
         )
 
-        self.net_hide = nn.Sequential(
-            nn.Linear(42, 32),
-            nn.ELU(),
-            nn.Linear(32, 32),
-            nn.ELU(),
-            nn.Linear(32, self.num_actions),
-            nn.Tanh(),
-        )
+        self.mean_layer = nn.Linear(32, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
-    def compute(self, inputs, role):
-        states = unflatten_tensorized_space(self.observation_space, inputs["states"])
-        # cnn = self.net_cnn(states["image"].view(-1, *self.observation_space["image"].shape).permute(0, 3, 1, 2))
-        # hide = self.net_hide(torch.cat([cnn, states["value"], self.net_local(cnn)], dim=1))
-        hide = self.net_hide(states["value"])
+        self.value_layer = nn.Linear(32, 1)
 
-        return (
-            hide,
-            self.log_std_parameter,
-            {},
-        )
-    
-    def mask(self):
-        from ultralytics import SAM
-        model = SAM("models/sam2_t.pt")
-        mask = model("sam_test.jpg")[0].masks
-
-
-class Value(DeterministicMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions=False):
-        Model.__init__(self, observation_space, action_space, device)
-        DeterministicMixin.__init__(self, clip_actions)
-
-        self.net_mlp = nn.Sequential(
-            nn.Linear(85, 32),
-            nn.ELU(),
-            nn.Linear(32, 32),
-            nn.ELU(),
-            nn.Linear(32, 1),
-        )
+    def act(self, inputs, role):
+        if role == "policy":
+            return GaussianMixin.act(self, inputs, role)
+        elif role == "value":
+            return DeterministicMixin.act(self, inputs, role)
 
     def compute(self, inputs, role):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
-        mlp = self.net_mlp(states["critic"])
+        image = states["image"].view(-1, *self.observation_space["image"].shape)
+        features = self.net_features(image)
+        # taken_actions = inputs["taken_actions"]
+        i = torch.cat([features, states["value"]], dim=1)
 
-        return (
-            mlp,
-            {},
-        )
+        if role == "policy":
+            self._shared_output = self.net_fc(i)
+            action = self.mean_layer(self._shared_output)
+            return action, self.log_std_parameter, {}
+        elif role == "value":
+            # i = self.net_mlp(states["critic"])
+            # i = torch.cat([image, states["critic"], taken_actions], dim=1)
+            shared_output = self.net_fc(i) if self._shared_output is None else self._shared_output
+            self._shared_output = None
+            value = self.value_layer(shared_output)
+            return value, {}
 
 
 # load and wrap the environment
@@ -114,7 +88,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-replay_buffer_size = 1024 * 3
+replay_buffer_size = 1024 * 256
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
@@ -123,8 +97,8 @@ memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=dev
 # PPO requires 2 models, visit its documentation for more details
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#models
 models = {}
-models["policy"] = Policy(env.observation_space, env.action_space, device, clip_actions=True)
-models["value"] = Value(env.observation_space, env.action_space, device)
+models["policy"] = Shared(env.observation_space, env.action_space, device)
+models["value"] = models["policy"]
 
 # initialize models' parameters (weights and biases)
 for model in models.values():
@@ -135,8 +109,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 16
-cfg["mini_batches"] = 256
+cfg["learning_epochs"] = 64
+cfg["mini_batches"] = 512
 # cfg["discount_factor"] = 0.9995
 # cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4

@@ -43,18 +43,17 @@ class Actor(GaussianMixin, Model):
         )
 
         self.net_fc = nn.Sequential(
-            nn.Linear(512, 128),
+            nn.Linear(512 + 30, 128),
             nn.BatchNorm1d(128),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Dropout(0.2),
 
             nn.Linear(128, 32),
             nn.BatchNorm1d(32),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Dropout(0.2),
 
             nn.Linear(32, self.num_actions),
-            nn.Tanh()
         )
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
@@ -62,10 +61,11 @@ class Actor(GaussianMixin, Model):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape)
         features = self.net_features(image)
-        fc = self.net_fc(features)
+        fusion = torch.cat([features, states["value"]], dim=1)
+        action = self.net_fc(fusion)
 
         return (
-            fc,
+            action,
             self.log_std_parameter,
             {},
         )
@@ -90,8 +90,8 @@ class Critic(DeterministicMixin, Model):
             nn.Flatten(),
         )
 
-        self.net_mlp = nn.Sequential(
-            nn.Linear(512 + 12 + self.num_actions, 128),
+        self.net_fc = nn.Sequential(
+            nn.Linear(512 + 54 + self.num_actions, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -108,11 +108,12 @@ class Critic(DeterministicMixin, Model):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape)
         taken_actions = inputs["taken_actions"]
-        i = torch.cat([self.net_features(image), states["critic"], taken_actions], dim=1)
-        mlp = self.net_mlp(i)
+        features = self.net_features(image)
+        fustion = torch.cat([features, states["critic"], taken_actions], dim=1)
+        value = self.net_fc(fustion)
 
         return (
-            mlp,
+            value,
             {},
         )
 
@@ -142,16 +143,16 @@ for model in models.values():
 cfg = SAC_DEFAULT_CONFIG.copy()
 cfg["gradient_steps"] = 1
 cfg["batch_size"] = 1024
-cfg["discount_factor"] = 0.98
+cfg["discount_factor"] = 0.99
 cfg["polyak"] = 0.005
 cfg["actor_learning_rate"] = 1e-5
 cfg["critic_learning_rate"] = 1e-6
 cfg["random_timesteps"] = 0
-cfg["learning_starts"] = 1024 * env.num_envs
+cfg["learning_starts"] = 10#1024 * env.num_envs
 cfg["grad_norm_clip"] = 1.0
 cfg["learn_entropy"] = True
-cfg["entropy_learning_rate"] = 1e-5
-cfg["initial_entropy_value"] = 0.9
+cfg["entropy_learning_rate"] = 1e-4
+cfg["initial_entropy_value"] = 0.5
 # cfg["target_entropy"] = 0.98 * np.array(-np.log(1.0 / 3), dtype=np.float32)
 
 cfg["experiment"]["write_interval"] = 300
@@ -167,7 +168,7 @@ agent = SAC(
     device=device,
 )
 
-# agent.load("./runs/torch/AGV/24-10-11_17-43-00-133994_SAC/checkpoints/agent_400000.pt")
+# agent.load("./runs/torch/AGV/24-10-18_17-32-57-551608_SAC/checkpoints/agent_1700000.pt")
 
 cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
