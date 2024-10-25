@@ -88,7 +88,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-replay_buffer_size = 1024 * 256
+replay_buffer_size = 1024 * 4 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
@@ -109,8 +109,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 64
-cfg["mini_batches"] = 512
+cfg["learning_epochs"] = 256 / env.num_envs
+cfg["mini_batches"] = 1024
 # cfg["discount_factor"] = 0.9995
 # cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 2.5e-4
@@ -143,7 +143,7 @@ agent = PPO(
 # agent.load("./runs/torch/AGV/24-09-25_17-12-11-556727_PPO/checkpoints/agent_100000.pt")
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 10000000}
+cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # start training
