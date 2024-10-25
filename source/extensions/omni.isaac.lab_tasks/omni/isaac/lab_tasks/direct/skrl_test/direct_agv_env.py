@@ -406,6 +406,7 @@ class AGVEnv(DirectRLEnv):
             + torque_penalty * self.reward_weights["torque_penalty"]
             + correct_xy_rew * self.reward_weights["correct_xy_rew"]
             + r_z_penalty * self.reward_weights["r_z_penalty"]
+            + 1
             # + self.episode_length_buf * 0.1
             # + correct_z_rew
         )
@@ -572,10 +573,10 @@ class AGVEnv(DirectRLEnv):
         r_hole_pos = self.hole_position(True)
         l_hole_pos = self.hole_position(False)
 
-        r_distance = self.euclidean_distance(r_hole_pos, r_pin_pos)
-        l_distance = self.euclidean_distance(l_hole_pos, l_pin_pos)
-        r_xy_distance = self.euclidean_distance(r_hole_pos[:,:2], r_pin_pos[:,:2])
-        l_xy_distance = self.euclidean_distance(l_hole_pos[:,:2], l_pin_pos[:,:2])
+        r_distance = euclidean_distance(r_hole_pos, r_pin_pos)
+        l_distance = euclidean_distance(l_hole_pos, l_pin_pos)
+        r_xy_distance = euclidean_distance(r_hole_pos[:,:2], r_pin_pos[:,:2])
+        l_xy_distance = euclidean_distance(l_hole_pos[:,:2], l_pin_pos[:,:2])
         r_z_distance = r_hole_pos[:,2] - r_pin_pos[:,2]
         l_z_distance = l_hole_pos[:,2] - l_pin_pos[:,2]
 
@@ -653,9 +654,7 @@ class AGVEnv(DirectRLEnv):
         # lpin [0, .163, .514 / .479]
         return hole_pos_w
 
-    def euclidean_distance(self, src, dist):
-        distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=src.ndim-1) + 1e-8)
-        return distance
+
 
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         """
@@ -692,7 +691,7 @@ class AGVEnv(DirectRLEnv):
         prev_pin_pos_w = self.prev_pos_w[f"{direction}_pin"]
 
         # prev_pin_xy = prev_pin_pos_w[:, 0:1]
-        # prev_xy_distance = self.euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
+        # prev_xy_distance = euclidean_distance(hole_pos_w[:, 0:1], prev_pin_xy)
         # relative_xy_rew = prev_xy_distance - curr_xy_distance
 
         # curr_z_dist = self.current_values[f"{direction}_z_distance"]
@@ -702,7 +701,7 @@ class AGVEnv(DirectRLEnv):
         # prev_z_dist = hole_pos_w[:, 2] - prev_pin_z
         # relative_z_rew = prev_z_dist - curr_z_dist
 
-        dist1 = self.euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
+        dist1 = euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
         dist2 = self.current_values[f"{direction}_distance"]
         dist3 = dist1 + dist2 - self.init_distance_r
         rew = dist3 ** 3
@@ -712,7 +711,7 @@ class AGVEnv(DirectRLEnv):
         curr_xyz_dist = self.current_values[f"{direction}_distance"]
         xyz_rew = (self.init_distance_r - curr_xyz_dist) ** 3
 
-        # prev_xyz_dist = self.euclidean_distance(hole_pos_w, prev_pin_pos_w)
+        # prev_xyz_dist = euclidean_distance(hole_pos_w, prev_pin_pos_w)
         # relative_xyz_dist = prev_xyz_dist - curr_xyz_dist
         # relative_xyz_rew = relative_xyz_dist ** 3
 
@@ -724,10 +723,6 @@ class AGVEnv(DirectRLEnv):
         # )
 
         return reward
-    
-    def power_reward(self, reward) -> torch.Tensor:
-        r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
-        return r
 
     def pin_direction_reward(self, hole, pin) -> torch.Tensor:
         current_direction = pin - hole
@@ -741,8 +736,8 @@ class AGVEnv(DirectRLEnv):
         l_hole_pos_w = self.hole_position(False, env_id)
         r_hole_pos_w = self.hole_position(True, env_id)
 
-        self.init_distance_l[env_id] = self.euclidean_distance(l_pin_pos_w, l_hole_pos_w)
-        self.init_distance_r[env_id] = self.euclidean_distance(r_pin_pos_w, r_hole_pos_w)
+        self.init_distance_l[env_id] = euclidean_distance(l_pin_pos_w, l_hole_pos_w)
+        self.init_distance_r[env_id] = euclidean_distance(r_pin_pos_w, r_hole_pos_w)
         self.init_pin_pos[env_id] = r_pin_pos_w
         self.init_hole_pos[env_id] = r_hole_pos_w
         self.init_direction[env_id] = r_hole_pos_w - r_pin_pos_w
@@ -755,7 +750,7 @@ class AGVEnv(DirectRLEnv):
         r_hole_xy = r_hole_pos_w[0:1]
         r_pin_xy = r_pin_pos_w[0:1]
 
-        self.init_xy_distance_r[env_id] = self.euclidean_distance(r_hole_xy, r_pin_xy)
+        self.init_xy_distance_r[env_id] = euclidean_distance(r_hole_xy, r_pin_xy)
 
         self.prev_pos_w["r_pin"][env_id] = r_pin_pos_w
         self.prev_pos_w["l_pin"][env_id] = l_pin_pos_w
@@ -768,26 +763,6 @@ class AGVEnv(DirectRLEnv):
         # )
         # self.my_visualizer.visualize(marker_locations)
 
-    def is_undesired_contacts(self, sensor: ContactSensor) -> torch.Tensor:
-        net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
-        is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
-        return is_contact
-
-    def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
-        world_transform = xformable.ComputeLocalToWorldTransform(0)
-        world_pos = world_transform.ExtractTranslation()
-        world_quat = world_transform.ExtractRotationQuat()
-
-        px = world_pos[0] - env_pos[0]
-        py = world_pos[1] - env_pos[1]
-        pz = world_pos[2] - env_pos[2]
-        qx = world_quat.imaginary[0]
-        qy = world_quat.imaginary[1]
-        qz = world_quat.imaginary[2]
-        qw = world_quat.real
-
-        return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
-    
     def curriculum_switch(self):
         multiplier = 100
 
@@ -847,3 +822,32 @@ def scale(x, lower, upper):
 @torch.jit.script
 def unscale(x, lower, upper):
     return (2.0 * x - upper - lower) / (upper - lower)
+
+def euclidean_distance(src, dist):
+    distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=src.ndim-1) + 1e-8)
+    return distance
+
+def power_reward(reward) -> torch.Tensor:
+    r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
+    return r
+
+def is_undesired_contacts(sensor: ContactSensor) -> torch.Tensor:
+    net_contact_forces: torch.Tensor = sensor.data.net_forces_w_history
+    is_contact = torch.max(torch.norm(net_contact_forces[:, :, 0], dim=-1), dim=1)[0] > 0
+    return is_contact
+
+
+def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
+    world_transform = xformable.ComputeLocalToWorldTransform(0)
+    world_pos = world_transform.ExtractTranslation()
+    world_quat = world_transform.ExtractRotationQuat()
+
+    px = world_pos[0] - env_pos[0]
+    py = world_pos[1] - env_pos[1]
+    pz = world_pos[2] - env_pos[2]
+    qx = world_quat.imaginary[0]
+    qy = world_quat.imaginary[1]
+    qz = world_quat.imaginary[2]
+    qw = world_quat.real
+
+    return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
