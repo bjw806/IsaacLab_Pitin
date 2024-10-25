@@ -71,9 +71,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
-    num_actions = 3
     num_channels = 4
-    # num_states = 63
     # events = AGVEventCfg()
 
     # simulation
@@ -136,7 +134,6 @@ class AGVEnvCfg(DirectRLEnvCfg):
         "jrpin",
     ]
 
-    num_observations = num_channels * rcam.height * rcam.width
     write_image_to_file = False
 
     # change viewer settings
@@ -155,6 +152,19 @@ class AGVEnvCfg(DirectRLEnvCfg):
     #   bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.0001, operation="abs"),
     # )
 
+    observation_space = gym.spaces.Dict(
+        image=gym.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(
+                512,
+                num_channels,
+            ),
+        ),
+        value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
+        critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
+    )
+    action_space = gym.spaces.Box(low=-1, high=1, shape=(3,))
 
 class AGVEnv(DirectRLEnv):
     cfg: AGVEnvCfg
@@ -246,58 +256,6 @@ class AGVEnv(DirectRLEnv):
         # print(2)
         """Cleanup for the environment."""
         super().close()
-
-    def _configure_gym_env_spaces(self):
-        # Configure the action and observation spaces for the Gym environment.
-        # observation space (unbounded since we don't impose any limits)
-        self.num_actions = self.cfg.num_actions
-        self.num_observations = self.cfg.num_observations
-        self.num_states = self.cfg.num_states
-
-        # set up spaces
-        self.single_observation_space = gym.spaces.Dict()
-        self.single_observation_space["policy"] = gym.spaces.Dict(
-            image=gym.spaces.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=(
-                    512,
-                    self.cfg.num_channels,
-                ),
-            ),
-            value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-            critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
-        )
-
-        if not self.cfg.num_states:
-            self.state_space = None
-        if self.num_states > 0:
-            self.single_observation_space["critic"] = gym.spaces.Box(
-                low=-np.inf,
-                high=np.inf,
-                shape=(
-                    self.num_states,
-                    # self.cfg.rcam.height,
-                    # self.cfg.rcam.width,
-                    # self.cfg.num_channels,
-                ),
-            )
-            # shape=(self.num_states,)
-            self.state_space = gym.vector.utils.batch_space(self.single_observation_space["critic"], self.num_envs)
-        else:
-            self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.cfg.num_states,))
-
-        self.single_action_space = gym.spaces.Box(low=-1, high=1, shape=(self.num_actions,))
-
-        # batch the spaces for vectorized environments
-        self.observation_space = gym.vector.utils.batch_space(
-            self.single_observation_space["policy"],
-            self.num_envs,
-        )
-        self.action_space = gym.vector.utils.batch_space(
-            self.single_action_space,
-            self.num_envs,
-        )
 
     def _setup_scene(self):
         # print(4)
@@ -826,7 +784,7 @@ class AGVEnv(DirectRLEnv):
         return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
     
     def curriculum_switch(self):
-        multiplier = 10
+        multiplier = 100
 
         if self.common_step_counter < 1000 * multiplier:
             self.reward_weights = {
