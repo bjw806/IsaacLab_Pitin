@@ -165,6 +165,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
         critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
     )
     action_space = gym.spaces.Box(low=-1, high=1, shape=(3,))
+    curriculum_learning = False
 
 class AGVEnv(DirectRLEnv):
     cfg: AGVEnvCfg
@@ -242,13 +243,13 @@ class AGVEnv(DirectRLEnv):
         self.random_pin_position = False
         self.random_hole_position = False
         self.reward_weights = {
-            "rew_pin_r": 0,
+            "rew_pin_r": 1000,
             "rew_pin_r_xy": 0,
             "correct_xy_rew": 0,
-            "correct_rew": 0,
-            "z_penalty": 0,
-            "contact_penalty": 0,
-            "torque_penalty": 0,
+            "correct_rew": 1,
+            "z_penalty": -100,
+            "contact_penalty": -.1,
+            "torque_penalty": -0.00003,
             "r_z_penalty": 0,
         }
 
@@ -415,6 +416,7 @@ class AGVEnv(DirectRLEnv):
             f"xy: {round(rew_pin_r_xy[0].item() * self.reward_weights['rew_pin_r_xy'], 3)} "
             f"z: {round(z_penalty[0].item() * self.reward_weights['z_penalty'], 2)} "
             f"zr: {round(r_z_penalty[0].item() * self.reward_weights['r_z_penalty'], 2)} "
+            f"torque: {round(torque_penalty[0].item() * self.reward_weights['torque_penalty'], 2)} "
             f"contact: {round(contact_penalty[0].item() * self.reward_weights['contact_penalty'], 2)} "
             f"total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
         )
@@ -433,7 +435,10 @@ class AGVEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
-        self.curriculum_switch()
+
+        if self.cfg.curriculum_learning:
+            self.curriculum_switch()
+
         self.serial_frames = torch.zeros(
             self.serial_frames.shape, 
             dtype=torch.float, 
@@ -443,15 +448,15 @@ class AGVEnv(DirectRLEnv):
         self.randomize_joints_by_offset(
             env_ids,
             (-0.03, 0.03)
-            if self.random_pin_position
+            if not self.cfg.curriculum_learning or self.random_pin_position
             else (0, 0),
             "agv"
         )
         
         self.randomize_object_position(
             env_ids,
-            (-0.1, 0.1) if self.random_hole_position else (0, 0),
-            (-0.03, 0.03) if self.random_hole_position else (0, 0), 
+            (-0.1, 0.1) if not self.cfg.curriculum_learning or self.random_hole_position else (0, 0),
+            (-0.03, 0.03) if not self.cfg.curriculum_learning or self.random_hole_position else (0, 0), 
             "niro"
         )
 
@@ -472,7 +477,7 @@ class AGVEnv(DirectRLEnv):
 
         for idx, object_name in enumerate(object_names):
             for env_id in env_ids:
-                if self.random_color:
+                if not self.cfg.curriculum_learning or self.random_color:
                     color = Gf.Vec3f(random.random(), random.random(), random.random())
                     color_spec = stage.GetAttributeAtPath(f"/World/envs/env_{env_id}/{object_name}/Looks/{material_names[idx]}/{property_names[idx]}")
                     color_spec.Set(color)
