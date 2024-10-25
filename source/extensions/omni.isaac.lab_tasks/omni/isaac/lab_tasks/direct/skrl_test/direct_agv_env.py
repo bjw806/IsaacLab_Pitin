@@ -394,7 +394,7 @@ class AGVEnv(DirectRLEnv):
 
         # penalty
         z_penalty = self.current_values["terminate_z"].int()
-        contact_penalty = self.is_undesired_contacts(self._niro_contact).int()
+        contact_penalty = is_undesired_contacts(self._niro_contact).int()
         torque_penalty = torch.sum(self.current_values["agv_torque"] ** 2, dim=1)
         # sum
         total_reward = (
@@ -653,8 +653,6 @@ class AGVEnv(DirectRLEnv):
         # niro [-0.5000,  0.0000,  1.1000]
         # lpin [0, .163, .514 / .479]
         return hole_pos_w
-
-
 
     def pin_reward(self, right: bool = True) -> torch.Tensor:
         """
