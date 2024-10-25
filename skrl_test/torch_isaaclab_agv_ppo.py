@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast
 
 # seed for reproducibility
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
-
+torch.autograd.set_detect_anomaly(True)
 
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
@@ -109,25 +109,25 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = int(256 / env.num_envs)
+cfg["learning_epochs"] = 16
 cfg["mini_batches"] = 1024
-# cfg["discount_factor"] = 0.9995
-# cfg["lambda"] = 0.95
-cfg["policy_learning_rate"] = 2.5e-4
-cfg["value_learning_rate"] = 2.5e-4
+cfg["discount_factor"] = 0.99
+cfg["lambda"] = 0.95
+cfg["policy_learning_rate"] = 1e-5
+cfg["value_learning_rate"] = 1e-5
 cfg["grad_norm_clip"] = 1.0
-# cfg["ratio_clip"] = 0.2
-# cfg["value_clip"] = 0.2
-# cfg["clip_predicted_values"] = False
-# cfg["entropy_loss_scale"] = 0.0
-# cfg["value_loss_scale"] = 0.5
-# cfg["kl_threshold"] = 0
-# cfg["random_timesteps"] = 3000
-# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
-# cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
+cfg["ratio_clip"] = 0.2
+cfg["value_clip"] = 0.2
+cfg["clip_predicted_values"] = False
+cfg["entropy_loss_scale"] = 0.0
+cfg["value_loss_scale"] = 0.5
+cfg["kl_threshold"] = 0
+cfg["learning_starts"] = 0
+cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
+cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
 
 # logging to TensorBoard and write checkpoints (in timesteps)
-cfg["experiment"]["write_interval"] = 1000
+cfg["experiment"]["write_interval"] = 1024
 cfg["experiment"]["checkpoint_interval"] = 100000
 cfg["experiment"]["directory"] = "runs/torch/AGV"
 
