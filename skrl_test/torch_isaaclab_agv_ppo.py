@@ -88,7 +88,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-replay_buffer_size = 1024 * 4 * env.num_envs
+replay_buffer_size = 1024 * 1 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
@@ -109,8 +109,8 @@ for model in models.values():
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 16
-cfg["mini_batches"] = 1024
+cfg["learning_epochs"] = 64
+cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
 cfg["policy_learning_rate"] = 1e-5
@@ -122,9 +122,13 @@ cfg["clip_predicted_values"] = False
 cfg["entropy_loss_scale"] = 0.0
 cfg["value_loss_scale"] = 0.5
 cfg["kl_threshold"] = 0
+cfg["optimizer"] = torch.optim.AdamW(models["policy"].parameters(), lr=1e-5)
 cfg["learning_starts"] = 0
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.StepLR
-cfg["learning_rate_scheduler_kwargs"] = {"step_size": 10000, "gamma": 0.5}
+cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.OneCycleLR
+cfg["learning_rate_scheduler_kwargs"] = {
+    "max_lr": 1e-4, 
+    "total_steps": 1000000,
+}
 
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 1024
