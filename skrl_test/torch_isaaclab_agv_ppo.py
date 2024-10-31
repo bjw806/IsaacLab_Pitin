@@ -10,15 +10,25 @@ from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 from skrl.utils.spaces.torch import unflatten_tensorized_space
-from torch.cuda.amp import autocast
+from lr_schedulers import CosineAnnealingWarmUpRestarts
 
 # seed for reproducibility
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
+
 
 class Shared(GaussianMixin, DeterministicMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions=False,
-                 clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum"):
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        device,
+        clip_actions=False,
+        clip_log_std=True,
+        min_log_std=-20,
+        max_log_std=2,
+        reduction="sum",
+    ):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
@@ -42,7 +52,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.BatchNorm1d(128),
             nn.ELU(),
             nn.Dropout(0.2),
-
             nn.Linear(128, 32),
             nn.BatchNorm1d(32),
             nn.ELU(),
@@ -101,8 +110,8 @@ models["policy"] = Shared(env.observation_space, env.action_space, device)
 models["value"] = models["policy"]
 
 # initialize models' parameters (weights and biases)
-for model in models.values():
-    model.init_parameters(method_name="normal_", mean=0.0, std=0.1)
+# for model in models.values():
+#     model.init_parameters(method_name="normal_", mean=0.0, std=0.1)
 
 
 # configure and instantiate the agent (visit its documentation to see all the options)
@@ -112,22 +121,24 @@ cfg["rollouts"] = memory_size
 cfg["learning_epochs"] = 64
 cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
-cfg["lambda"] = 0.95
-cfg["policy_learning_rate"] = 1e-5
-cfg["value_learning_rate"] = 1e-5
-cfg["grad_norm_clip"] = 1.0
-cfg["ratio_clip"] = 0.2
-cfg["value_clip"] = 0.2
-cfg["clip_predicted_values"] = False
-cfg["entropy_loss_scale"] = 0.0
-cfg["value_loss_scale"] = 0.5
-cfg["kl_threshold"] = 0
-cfg["optimizer"] = torch.optim.AdamW(models["policy"].parameters(), lr=1e-5)
+# cfg["lambda"] = 0.95
+cfg["learning_rate"] = 0
+# cfg["grad_norm_clip"] = 0.5
+# cfg["ratio_clip"] = 0.2
+# cfg["value_clip"] = 0.2
+# cfg["clip_predicted_values"] = False
+# cfg["entropy_loss_scale"] = 0.5
+# cfg["value_loss_scale"] = 1.0
+# cfg["mixed_precision"] = False
+# cfg["optimizer"] = torch.optim.Adam(models["policy"].parameters(), lr=0)
 cfg["learning_starts"] = 0
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.OneCycleLR
+cfg["learning_rate_scheduler"] = CosineAnnealingWarmUpRestarts
 cfg["learning_rate_scheduler_kwargs"] = {
-    "max_lr": 1e-4, 
-    "total_steps": 1000000,
+    "T_0": 1024,
+    "T_mult": 1,
+    "T_up": cfg["learning_epochs"],
+    "eta_max": 1e-4,
+    "gamma": 0.5,
 }
 
 # logging to TensorBoard and write checkpoints (in timesteps)
@@ -144,12 +155,10 @@ agent = PPO(
     device=device,
 )
 
-# agent.load("./runs/torch/AGV/24-09-25_17-12-11-556727_PPO/checkpoints/agent_100000.pt")
+agent.load("./runs/torch/AGV/24-10-30_17-27-56-597455_PPO/checkpoints/agent_400000.pt")
 
 # configure and instantiate the RL trainer
 cfg_trainer = {"timesteps": 1000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
-# start training
-with autocast():
-    trainer.train()
+trainer.train()

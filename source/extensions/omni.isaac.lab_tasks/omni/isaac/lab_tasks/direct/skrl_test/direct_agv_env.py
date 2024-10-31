@@ -247,9 +247,9 @@ class AGVEnv(DirectRLEnv):
             "rew_pin_r_xy": 0,
             "correct_xy_rew": 0,
             "correct_rew": 1,
-            "z_penalty": -100,
+            "z_penalty": -10,
             "contact_penalty": -.1,
-            "torque_penalty": -0.00003,
+            "torque_penalty": -0.00001,
             "r_z_penalty": 0,
         }
 
@@ -309,7 +309,7 @@ class AGVEnv(DirectRLEnv):
         # normalize = transforms.Normalize(0.0, 1.0)
         # grayscale_image = grayscale(image)
         # self.yolo_show.predict(image, show=True, verbose=False)
-        results = self.yolo.predict(image, embed=[22], verbose=False)
+        results = self.yolo.predict(image, embed=[22], verbose=False, half=True)
         features = torch.stack(results)
 
         self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
@@ -374,10 +374,12 @@ class AGVEnv(DirectRLEnv):
         rew_pin_r_xy = -(self.current_values[f"{direction}_xy_distance"] ** 2)
         r_z_penalty = self.current_values["r_z_distance"] ** 3
 
+        pin_vel = self.current_values[f"{direction}_pin_vel"] + 1e-8
+
         correct_xy_rew = (
             self.current_values[f"{direction}_pin_correct_xy"].int()
             * torch.clamp(
-                1 / (self.current_values[f"{direction}_pin_vel"] + 1e-8),
+                1 / pin_vel,
                 max=10000,
                 min=10
             )
@@ -386,9 +388,9 @@ class AGVEnv(DirectRLEnv):
         correct_rew = (
             self.current_values[f"{direction}_pin_correct"].int()
             * torch.clamp(
-                1 / (self.current_values[f"{direction}_pin_vel"] + 1e-8),
-                max=10000000,
-                min=1000
+                1 / pin_vel,
+                max=10000,
+                min=100
             )
         )
 
@@ -406,7 +408,7 @@ class AGVEnv(DirectRLEnv):
             + torque_penalty * self.reward_weights["torque_penalty"]
             + correct_xy_rew * self.reward_weights["correct_xy_rew"]
             + r_z_penalty * self.reward_weights["r_z_penalty"]
-            + 1
+            # + 1
             # + self.episode_length_buf * 0.1
             # + correct_z_rew
         )
@@ -414,9 +416,9 @@ class AGVEnv(DirectRLEnv):
         UP = "\x1b[3A"
         print(
             f"\npin: {round(rew_pin_r[0].item() * self.reward_weights['rew_pin_r'], 3)} "
-            f"xy: {round(rew_pin_r_xy[0].item() * self.reward_weights['rew_pin_r_xy'], 3)} "
+            f"co: {self.current_values[f'{direction}_pin_correct'][0].item()} "
             f"z: {round(z_penalty[0].item() * self.reward_weights['z_penalty'], 2)} "
-            f"zr: {round(r_z_penalty[0].item() * self.reward_weights['r_z_penalty'], 2)} "
+            f"vel: {round(pin_vel[0].item(), 3)} "
             f"torque: {round(torque_penalty[0].item() * self.reward_weights['torque_penalty'], 2)} "
             f"contact: {round(contact_penalty[0].item() * self.reward_weights['contact_penalty'], 2)} "
             f"total: {round(total_reward[0].item(), 2)}_\n{UP}\r"
@@ -431,8 +433,12 @@ class AGVEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pin_out_of_hole = self.current_values["terminate_z"]
         pin_in_hole = self.current_values["r_pin_correct"]
-
-        return torch.logical_or(pin_in_hole, pin_out_of_hole), time_out
+        pin_vel = self.current_values["r_pin_vel"] + 1e-8 < 0.01
+        pin_correct = torch.logical_and(pin_in_hole, pin_vel)
+        # torch.logical_or(pin_correct, pin_out_of_hole)
+        if pin_correct.any():
+            print(f"pin_correct: {torch.nonzero(pin_vel, as_tuple=True)[0]}")
+        return pin_correct, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)
@@ -606,7 +612,7 @@ class AGVEnv(DirectRLEnv):
             l_pin_correct_xy=l_xy_distance < 0.01,
             r_pin_correct_z=r_z_distance < 0.01,
             l_pin_correct_z=l_z_distance < 0.01,
-            terminate_z=torch.logical_and(r_pin_pos[:, 2] >= r_hole_pos[:, 2], r_xy_distance >= 0.01),
+            terminate_z=torch.logical_and(r_pin_pos[:, 2] >= r_hole_pos[:, 2] + 0.03, r_xy_distance >= 0.01),
         )
 
         pin_list = [r_pin_pos[i].tolist() for i in range(self.num_envs)]
@@ -644,7 +650,7 @@ class AGVEnv(DirectRLEnv):
             else self._niro.data.root_pos_w
         )
         hole_rel = torch.tensor(
-            [0.455, 0.693 if right else -0.693, 0.0654],
+            [0.455, 0.693 if right else -0.693, 0.0654 - 0.03],
             device="cuda:0",
         )
         hole_pos_w = torch.add(niro_pos, hole_rel)
