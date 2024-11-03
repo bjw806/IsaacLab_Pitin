@@ -67,7 +67,7 @@ PPO_DEFAULT_CONFIG = {
 # [end-config-dict-torch]
 
 
-class PPO(Agent):
+class PPO_RND(Agent):
     def __init__(self,
                  models: Mapping[str, Model],
                  memory: Optional[Union[Memory, Tuple[Memory]]] = None,

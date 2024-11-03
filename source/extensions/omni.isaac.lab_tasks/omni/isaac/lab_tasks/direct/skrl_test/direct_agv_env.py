@@ -67,7 +67,7 @@ ENV_REGEX_NS = "/World/envs/env_.*"
 @configclass
 class AGVEnvCfg(DirectRLEnvCfg):
     # env
-    dt = 1 / 120
+    dt = 1 / 240
     decimation = 2
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
@@ -245,10 +245,11 @@ class AGVEnv(DirectRLEnv):
         self.reward_weights = {
             "rew_pin_r": 1000,
             "rew_pin_r_xy": 0,
+            "rew_pin_vel": -0.1,
             "correct_xy_rew": 0,
             "correct_rew": 1,
-            "z_penalty": -10,
-            "contact_penalty": -.1,
+            "z_penalty": 0,
+            "contact_penalty": 0,
             "torque_penalty": -0.00001,
             "r_z_penalty": 0,
         }
@@ -375,6 +376,7 @@ class AGVEnv(DirectRLEnv):
         r_z_penalty = self.current_values["r_z_distance"] ** 3
 
         pin_vel = self.current_values[f"{direction}_pin_vel"] + 1e-8
+        rew_pin_vel = pin_vel ** 2
 
         correct_xy_rew = (
             self.current_values[f"{direction}_pin_correct_xy"].int()
@@ -388,8 +390,8 @@ class AGVEnv(DirectRLEnv):
         correct_rew = (
             self.current_values[f"{direction}_pin_correct"].int()
             * torch.clamp(
-                1 / pin_vel,
-                max=10000,
+                1 / rew_pin_vel,
+                max=100000,
                 min=100
             )
         )
@@ -403,6 +405,7 @@ class AGVEnv(DirectRLEnv):
             rew_pin_r * self.reward_weights["rew_pin_r"]
             + rew_pin_r_xy * self.reward_weights["rew_pin_r_xy"]
             + correct_rew * self.reward_weights["correct_rew"]
+            + rew_pin_vel * self.reward_weights["rew_pin_vel"]
             + z_penalty * self.reward_weights["z_penalty"]
             + contact_penalty * self.reward_weights["contact_penalty"]
             + torque_penalty * self.reward_weights["torque_penalty"]
@@ -418,7 +421,7 @@ class AGVEnv(DirectRLEnv):
             f"\npin: {round(rew_pin_r[0].item() * self.reward_weights['rew_pin_r'], 3)} "
             f"co: {self.current_values[f'{direction}_pin_correct'][0].item()} "
             f"z: {round(z_penalty[0].item() * self.reward_weights['z_penalty'], 2)} "
-            f"vel: {round(pin_vel[0].item(), 3)} "
+            f"vel: {round(rew_pin_vel[0].item() * self.reward_weights['rew_pin_vel'], 3)} "
             f"torque: {round(torque_penalty[0].item() * self.reward_weights['torque_penalty'], 2)} "
             f"contact: {round(contact_penalty[0].item() * self.reward_weights['contact_penalty'], 2)} "
             f"total: {round(total_reward[0].item(), 2)}_\n{UP}\r"

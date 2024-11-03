@@ -41,21 +41,44 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Conv1d(512, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.2),
             nn.Conv1d(256, 256, kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
         )
 
-        self.net_fc = nn.Sequential(
-            nn.Linear(512 + 30, 128),
+        self.net_values = nn.Sequential(
+            nn.Linear(30, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 128),
             nn.BatchNorm1d(128),
-            nn.ELU(),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+        )
+
+        self.net_fc = nn.Sequential(
+            nn.Linear(512 * 2, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 32),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
             nn.BatchNorm1d(32),
-            nn.ELU(),
-            nn.Dropout(0.2),
+            nn.ReLU(),
         )
 
         self.mean_layer = nn.Linear(32, self.num_actions)
@@ -74,7 +97,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         image = states["image"].view(-1, *self.observation_space["image"].shape)
         features = self.net_features(image)
         # taken_actions = inputs["taken_actions"]
-        i = torch.cat([features, states["value"]], dim=1)
+        values = self.net_values(states["value"])
+        i = torch.cat([features, values], dim=1)
 
         if role == "policy":
             self._shared_output = self.net_fc(i)
@@ -100,7 +124,7 @@ device = env.device
 replay_buffer_size = 1024 * 1 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
-
+# memory.load("skrl_test/memory/24-10-31_13-05-25-860930_memory_0x77a9a9ff3730.csv")
 
 # instantiate the agent's models (function approximators).
 # PPO requires 2 models, visit its documentation for more details
@@ -118,27 +142,27 @@ models["value"] = models["policy"]
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 64
+cfg["learning_epochs"] = 4
 cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
 # cfg["lambda"] = 0.95
-cfg["learning_rate"] = 0
-# cfg["grad_norm_clip"] = 0.5
-# cfg["ratio_clip"] = 0.2
+cfg["learning_rate"] = 0  # CosineAnnealingWarmUpRestarts
+# cfg["grad_norm_clip"] = 1.0  # gradient clipping
+# cfg["ratio_clip"] = 0.1  # 정책 클리핑 (정책이 학습 초기에 과하게 수렴되지 않도록 작은 값을 설정)
 # cfg["value_clip"] = 0.2
 # cfg["clip_predicted_values"] = False
-# cfg["entropy_loss_scale"] = 0.5
+# cfg["entropy_loss_scale"] = 0.05
 # cfg["value_loss_scale"] = 1.0
 # cfg["mixed_precision"] = False
 # cfg["optimizer"] = torch.optim.Adam(models["policy"].parameters(), lr=0)
 cfg["learning_starts"] = 0
 cfg["learning_rate_scheduler"] = CosineAnnealingWarmUpRestarts
 cfg["learning_rate_scheduler_kwargs"] = {
-    "T_0": 1024,
-    "T_mult": 1,
-    "T_up": cfg["learning_epochs"],
-    "eta_max": 1e-4,
-    "gamma": 0.5,
+    "T_0": 16 * cfg["learning_epochs"],  # 첫 주기의 길이
+    "T_mult": 2,  # 매 주기마다 주기의 길이를 두배로 늘림
+    "T_up": cfg["learning_epochs"],  # warm-up 주기
+    "eta_max": 1e-3,  # 최대 학습률
+    "gamma": 0.6,  # 학습률 감소율
 }
 
 # logging to TensorBoard and write checkpoints (in timesteps)
@@ -155,10 +179,10 @@ agent = PPO(
     device=device,
 )
 
-agent.load("./runs/torch/AGV/24-10-30_17-27-56-597455_PPO/checkpoints/agent_400000.pt")
+# agent.load("./runs/torch/AGV/24-10-30_17-27-56-597455_PPO/checkpoints/agent_400000.pt")
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 1000000}
+cfg_trainer = {"timesteps": 10000000}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 trainer.train()
