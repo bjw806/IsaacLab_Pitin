@@ -240,11 +240,11 @@ class Value(DeterministicMixin, Model):
 env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
 env = wrap_env(env, wrapper="isaaclab-single-agent")
 device = env.device
-replay_buffer_size = 1024 * 4 * env.num_envs
+replay_buffer_size = 1024 * 1 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
-cfg = dict(
+model_cfg = dict(
     observation_space=env.observation_space,
     action_space=env.action_space,
     device=env.device,
@@ -255,16 +255,16 @@ cfg = dict(
 )
 models = {}
 models["policy"] = Policy(
-    clip_actions=True,
+    # clip_actions=True,
     clip_log_std=True,
     min_log_std=-20,
     max_log_std=2,
     reduction="sum",
-    **cfg,
+    **model_cfg,
 )
 models["value"] = Value(
     clip_actions=False,
-    **cfg,
+    **model_cfg,
 )
 
 cfg = PPO_DEFAULT_CONFIG.copy()
@@ -274,8 +274,8 @@ cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
 # cfg["lambda"] = 0.95
 cfg["learning_rate"] = 0  # CosineAnnealingWarmUpRestarts
-# cfg["grad_norm_clip"] = 1.0  # gradient clipping
-# cfg["ratio_clip"] = 0.1  # 정책 클리핑 (정책이 학습 초기에 과하게 수렴되지 않도록 작은 값을 설정)
+cfg["grad_norm_clip"] = 1.0  # gradient clipping
+cfg["ratio_clip"] = 0.1  # 정책 클리핑 (정책이 학습 초기에 과하게 수렴되지 않도록 작은 값을 설정)
 # cfg["value_clip"] = 0.2
 # cfg["clip_predicted_values"] = False
 # cfg["entropy_loss_scale"] = 0.05

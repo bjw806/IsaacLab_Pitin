@@ -72,7 +72,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_channels = 4
-    lstm = False
+    LSTM = True
     # events = AGVEventCfg()
 
     # simulation
@@ -143,10 +143,10 @@ class AGVEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4, env_spacing=3.0, replicate_physics=True)
 
-    action_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
-      noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.005, operation="add"),
-      bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.0015, operation="abs"),
-    )
+    # action_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
+    #   noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.005, operation="add"),
+    #   bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.0015, operation="abs"),
+    # )
 
     # observation_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
     #   noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.002, operation="add"),
@@ -157,7 +157,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
         image=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(512,) if lstm else (512, num_channels,),
+            shape=(512,) if LSTM else (512, num_channels,),
         ),
         value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
         # critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
@@ -236,7 +236,6 @@ class AGVEnv(DirectRLEnv):
             device=self.device
         )
         
-        self.lstm = self.cfg.lstm
         self.idx = 1
         self.random_color = False
         self.random_pin_position = False
@@ -312,7 +311,7 @@ class AGVEnv(DirectRLEnv):
         results = self.yolo.predict(image, embed=[22], verbose=False, half=True)
         features = torch.stack(results)
 
-        if not self.lstm:
+        if not self.cfg.LSTM:
             self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
             self.serial_frames[:, :, -1] = features
 
@@ -341,7 +340,7 @@ class AGVEnv(DirectRLEnv):
         observations = {
             "policy": {
                 "value": values,
-                "image": features if self.lstm else self.serial_frames,
+                "image": features if self.cfg.LSTM else self.serial_frames,
                 # "critic": torch.cat(
                 #     (
                 #         values,
