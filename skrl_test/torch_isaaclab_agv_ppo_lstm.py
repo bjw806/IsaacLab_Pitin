@@ -27,7 +27,7 @@ class Policy(GaussianMixin, Model):
         reduction="sum",
         num_envs=1,
         num_layers=1,
-        hidden_size=128,
+        hidden_size=256,
         sequence_length=4,
     ):
         Model.__init__(self, observation_space, action_space, device)
@@ -43,10 +43,14 @@ class Policy(GaussianMixin, Model):
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             batch_first=True,
+            dropout=0.2,
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 64),
+            nn.Linear(self.hidden_size, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Linear(64, 32),
@@ -133,7 +137,7 @@ class Value(DeterministicMixin, Model):
         clip_actions=False,
         num_envs=1,
         num_layers=1,
-        hidden_size=128,
+        hidden_size=256,
         sequence_length=4,
     ):
         Model.__init__(self, observation_space, action_space, device)
@@ -149,10 +153,14 @@ class Value(DeterministicMixin, Model):
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             batch_first=True,
+            dropout=0.2,
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 64),
+            nn.Linear(self.hidden_size, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Linear(64, 32),
@@ -232,34 +240,31 @@ class Value(DeterministicMixin, Model):
 env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
 env = wrap_env(env, wrapper="isaaclab-single-agent")
 device = env.device
-replay_buffer_size = 1024 * 2 * env.num_envs
+replay_buffer_size = 1024 * 4 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
-models = {}
-models["policy"] = Policy(
+cfg = dict(
     observation_space=env.observation_space,
     action_space=env.action_space,
     device=env.device,
+    num_envs=env.num_envs,
+    num_layers=2,
+    hidden_size=256,
+    sequence_length=16,
+)
+models = {}
+models["policy"] = Policy(
     clip_actions=True,
     clip_log_std=True,
     min_log_std=-20,
     max_log_std=2,
     reduction="sum",
-    num_envs=env.num_envs,
-    num_layers=1,
-    hidden_size=64,
-    sequence_length=16,
+    **cfg,
 )
 models["value"] = Value(
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=env.device,
     clip_actions=False,
-    num_envs=env.num_envs,
-    num_layers=1,
-    hidden_size=64,
-    sequence_length=16,
+    **cfg,
 )
 
 cfg = PPO_DEFAULT_CONFIG.copy()
@@ -283,8 +288,8 @@ cfg["learning_rate_scheduler_kwargs"] = {
     "T_0": 16 * cfg["learning_epochs"],  # 첫 주기의 길이
     "T_mult": 2,  # 매 주기마다 주기의 길이를 두배로 늘림
     "T_up": cfg["learning_epochs"],  # warm-up 주기
-    "eta_max": 1e-4,  # 최대 학습률
-    "gamma": 0.8,  # 학습률 감소율
+    "eta_max": 5e-4,  # 최대 학습률
+    "gamma": 0.6,  # 학습률 감소율
 }
 
 cfg["experiment"]["write_interval"] = 1024
