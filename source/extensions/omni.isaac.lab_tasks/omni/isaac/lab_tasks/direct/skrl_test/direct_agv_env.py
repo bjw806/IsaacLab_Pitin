@@ -72,6 +72,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0
     action_scale = 100.0  # [N]
     num_channels = 4
+    lstm = False
     # events = AGVEventCfg()
 
     # simulation
@@ -156,13 +157,10 @@ class AGVEnvCfg(DirectRLEnvCfg):
         image=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(
-                512,
-                num_channels,
-            ),
+            shape=(512,) if lstm else (512, num_channels,),
         ),
         value=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(30,)),
-        critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
+        # critic=gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,)),
     )
     action_space = gym.spaces.Box(low=-1, high=1, shape=(3,))
     curriculum_learning = False
@@ -237,7 +235,8 @@ class AGVEnv(DirectRLEnv):
             dtype=torch.float, 
             device=self.device
         )
-
+        
+        self.lstm = self.cfg.lstm
         self.idx = 1
         self.random_color = False
         self.random_pin_position = False
@@ -313,8 +312,9 @@ class AGVEnv(DirectRLEnv):
         results = self.yolo.predict(image, embed=[22], verbose=False, half=True)
         features = torch.stack(results)
 
-        self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
-        self.serial_frames[:, :, -1] = features
+        if not self.lstm:
+            self.serial_frames[:, :, :-1] = self.serial_frames[:, :, 1:].clone()
+            self.serial_frames[:, :, -1] = features
 
         values = torch.cat(
             (
@@ -341,25 +341,25 @@ class AGVEnv(DirectRLEnv):
         observations = {
             "policy": {
                 "value": values,
-                "image": self.serial_frames,
-                "critic": torch.cat(
-                    (
-                        values,
-                        # math_utils.normalize(
-                        #     self._agv.data.body_state_w[
-                        #         :, self.actuated_dof_indices
-                        #     ].view(self.num_envs, self.num_actions * 13)
-                        # ),
-                        # self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
-                        self.pin_position(True) - self._agv.data.root_pos_w,
-                        self.pin_position(False) - self._agv.data.root_pos_w,
-                        self.hole_position(True) - self._agv.data.root_pos_w,
-                        self.hole_position(False) - self._agv.data.root_pos_w,
-                        self.pin_velocity(True),
-                        self.pin_velocity(False),
-                    ),
-                    dim=-1,
-                ),
+                "image": features if self.lstm else self.serial_frames,
+                # "critic": torch.cat(
+                #     (
+                #         values,
+                #         # math_utils.normalize(
+                #         #     self._agv.data.body_state_w[
+                #         #         :, self.actuated_dof_indices
+                #         #     ].view(self.num_envs, self.num_actions * 13)
+                #         # ),
+                #         # self._niro.data.body_pos_w[:, 0] - self.scene.env_origins,
+                #         self.pin_position(True) - self._agv.data.root_pos_w,
+                #         self.pin_position(False) - self._agv.data.root_pos_w,
+                #         self.hole_position(True) - self._agv.data.root_pos_w,
+                #         self.hole_position(False) - self._agv.data.root_pos_w,
+                #         self.pin_velocity(True),
+                #         self.pin_velocity(False),
+                #     ),
+                #     dim=-1,
+                # ),
             },
             # "critic": self._get_states(),
         }
