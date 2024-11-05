@@ -55,8 +55,8 @@ class AGVSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        height=640,
-        width=640,
+        height=400,
+        width=400,
         # update_period=0.1,
     )
 
@@ -419,8 +419,7 @@ def euclidean_distance(src, dist):
 
 
 def power_reward(reward) -> torch.Tensor:
-    r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
-    return r
+    return torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
 
 
 @configclass
