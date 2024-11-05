@@ -490,22 +490,18 @@ class RewardsCfg:
 
 
 def pin_correct(env, right: bool = True) -> torch.Tensor:
-    r_hole_pos_w = all_hole_positions(env, right)
-    r_pin_pos_w = all_pin_positions(env, right)
+    hole_pos_w = all_hole_positions(env, right)
+    pin_pos_w = all_pin_positions(env, right)
+    distance = euclidean_distance(hole_pos_w, pin_pos_w)
 
-    r_hole_xy = r_hole_pos_w[:, 0:1]
-    r_pin_xy = r_pin_pos_w[:, 0:1]
+    pin_lv = all_pin_velocities(env, right)[..., :3]
+    pin_v_norm = torch.norm(pin_lv, dim=-1)
 
-    r_hole_z = r_hole_pos_w[:, 2]
-    r_pin_z = r_pin_pos_w[:, 2]
+    pin_pos = distance < 0.01
+    pin_vel = pin_v_norm + 1e-8 < 0.01
+    pin_correct = torch.logical_and(pin_pos, pin_vel)
 
-    z_condition = r_pin_z >= r_hole_z
-
-    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
-    xy_condition = xy_distance >= 0.01
-
-    result = torch.where(z_condition & xy_condition, torch.tensor(True), torch.tensor(False))
-    return result
+    return pin_correct.squeeze(0)
 
 
 @configclass
@@ -559,7 +555,7 @@ class AGVEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 2
-        self.episode_length_s = 5
+        self.episode_length_s = 6
         # viewer settings
         self.viewer.eye = (8.0, 0.0, 5.0)
         # self.viewer.lookat = (0.0, 0.0, 2.5)
