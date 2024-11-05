@@ -17,7 +17,6 @@ from .cartpole_camera_env_cfg import (
     CartpoleTheiaTinyCameraEnvCfg,
 )
 from .cartpole_env_cfg import CartpoleEnvCfg
-from .agv_env_cfg import AGVEnvCfg
 
 ##
 # Register Gym environments.
