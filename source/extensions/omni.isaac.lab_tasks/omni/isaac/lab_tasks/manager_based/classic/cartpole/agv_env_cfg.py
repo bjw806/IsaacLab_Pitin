@@ -1,152 +1,46 @@
-# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
-import math
 import numpy as np
-
 import omni.isaac.lab.sim as sim_utils
+import omni.isaac.lab.utils.math as math_utils
+import omni.isaac.lab_tasks.manager_based.classic.cartpole.mdp as mdp
+import torch
+from omni.isaac.debug_draw import _debug_draw
 from omni.isaac.lab.assets import (
+    Articulation,
     ArticulationCfg,
     AssetBaseCfg,
-    RigidObjectCfg,
     RigidObject,
+    RigidObjectCfg,
 )
-from omni.isaac.lab.envs import ManagerBasedRLEnvCfg
+from omni.isaac.lab.envs import ManagerBasedEnv, ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 from omni.isaac.lab.managers import EventTermCfg as EventTerm
 from omni.isaac.lab.managers import ObservationGroupCfg as ObsGroup
 from omni.isaac.lab.managers import ObservationTermCfg as ObsTerm
 from omni.isaac.lab.managers import RewardTermCfg as RewTerm
 from omni.isaac.lab.managers import SceneEntityCfg
 from omni.isaac.lab.managers import TerminationTermCfg as DoneTerm
+from omni.isaac.lab.managers import ManagerTermBase as TermBase
 from omni.isaac.lab.scene import InteractiveSceneCfg
+from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg, TiledCamera, TiledCameraCfg
 from omni.isaac.lab.utils import configclass
-from omni.isaac.lab.actuators import ImplicitActuatorCfg
-from .dot_dict import DotDict
-import omni.isaac.lab_tasks.manager_based.classic.cartpole.mdp as mdp
-from omni.isaac.lab.sensors import CameraCfg, Camera, ContactSensorCfg, ContactSensor
-from omni.isaac.lab.envs import ManagerBasedEnv, ManagerBasedRLEnv
-import torch
-import omni.isaac.lab.utils.math as math_utils
+from omni.isaac.lab_tasks.direct.skrl_test.agv_cfg import AGV_CFG, AGV_JOINT
+import omni.isaac.core.utils.stage as stage_utils
+from pxr import Gf, UsdGeom
+import random
 
-##
-# Pre-defined configs
-##
-
-AGV_JOINT = DotDict(
-    dict(
-        MB_LW_REV="jlw",
-        MB_RW_REV="jrw",
-        MB_PZ_PRI="jz",
-        PZ_PY_PRI="jy",
-        PY_PX_PRI="jx",
-        PX_PR_REV="jr",
-        PR_LR_REV="jlr",
-        PR_RR_REV="jrr",
-        LR_LPIN_PRI="jlpin",
-        RR_RPIN_PRI="jrpin",
-    )
-)
-
-
-##
-# Scene definition
-##
+ENV_REGEX_NS = "/World/envs/env_.*"
 
 
 @configclass
 class AGVSceneCfg(InteractiveSceneCfg):
-    # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/ground",
         spawn=sim_utils.GroundPlaneCfg(),  # size=(100.0, 100.0)
     )
 
-    robot: ArticulationCfg = ArticulationCfg(
-        prim_path="{ENV_REGEX_NS}/AGV",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="./robot/usd/agv/agv_fixed_pin.usd",
-            # rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            #     rigid_body_enabled=True,
-            #     max_linear_velocity=1000.0,
-            #     max_angular_velocity=1000.0,
-            #     max_depenetration_velocity=100.0,
-            #     enable_gyroscopic_forces=True,
-            # ),
-            # articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            #     enabled_self_collisions=True,
-            #     solver_position_iteration_count=4,
-            #     solver_velocity_iteration_count=0,
-            #     sleep_threshold=0.005,
-            #     stabilization_threshold=0.001,
-            # ),
-            activate_contact_sensors=True,
-        ),
-        # init_state=ArticulationCfg.InitialStateCfg(
-        #     pos=(0.0, 0.0, 0.0),
-        #     joint_pos={
-        #         AGV_JOINT.MB_LW_REV: 0.0,
-        #         AGV_JOINT.MB_RW_REV: 0.0,
-        #         AGV_JOINT.MB_PZ_PRI: 0.0,
-        #         AGV_JOINT.PZ_PY_PRI: 0.0,
-        #         AGV_JOINT.PY_PX_PRI: 0.0,
-        #         AGV_JOINT.PX_PR_REV: 0.0,
-        #         AGV_JOINT.PR_LR_REV: 0.0,
-        #         AGV_JOINT.PR_RR_REV: 0.0,
-        #         AGV_JOINT.LR_LPIN_PRI: 0.0,
-        #         AGV_JOINT.RR_RPIN_PRI: 0.0,
-        #     },
-        # ),
-        actuators={
-            # "wheel_actuator": ImplicitActuatorCfg(
-            #     joint_names_expr=[AGV_JOINT.MB_LW_REV, AGV_JOINT.MB_RW_REV],
-            #     effort_limit=200.0,
-            #     velocity_limit=100.0,
-            #     stiffness=0.0,
-            #     damping=0.0,
-            # ),
-            "xyz_actuator": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    # AGV_JOINT.MB_PZ_PRI,
-                    AGV_JOINT.PZ_PY_PRI,
-                    AGV_JOINT.PY_PX_PRI,
-                ],
-                effort_limit=300.0,
-                velocity_limit=100.0,
-                stiffness=1000.0,
-                damping=1000.0,
-            ),
-            # "px_pr_rev_actuator": ImplicitActuatorCfg(
-            #     joint_names_expr=[AGV_JOINT.PX_PR_REV],
-            #     effort_limit=100.0,
-            #     velocity_limit=100.0,
-            #     stiffness=0.0,
-            #     damping=0.0,
-            # ),
-            # "pin_rev_actuator": ImplicitActuatorCfg(
-            #     joint_names_expr=[AGV_JOINT.PR_LR_REV, AGV_JOINT.PR_RR_REV],
-            #     effort_limit=200.0,
-            #     velocity_limit=100.0,
-            #     stiffness=0.0,
-            #     damping=0.0,
-            # ),
-            "pin_pri_actuator": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    # AGV_JOINT.LR_LPIN_PRI,
-                    AGV_JOINT.RR_RPIN_PRI
-                ],
-                effort_limit=100.0,
-                velocity_limit=50.0,
-                stiffness=100.0,
-                damping=100.0,
-            ),
-        },
-    )
-    # AGV_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    agv: ArticulationCfg = AGV_CFG.replace(prim_path=f"{ENV_REGEX_NS}/AGV")
 
     niro = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Niro",
+        prim_path=f"{ENV_REGEX_NS}/Niro",
         spawn=sim_utils.UsdFileCfg(
             usd_path="./robot/usd/niro/niro_fixed.usd",
             activate_contact_sensors=True,
@@ -157,39 +51,17 @@ class AGVSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    # lcam = CameraCfg(
-    #     data_types=["rgb"],
-    #     prim_path="{ENV_REGEX_NS}/AGV/lcam_1/Camera",
-    #     spawn=None,
-    #     height=256,
-    #     width=256,
-    #     # update_period=0.1,
-    # )
-    rcam = CameraCfg(
-        data_types=["rgb"],
+    rcam: TiledCameraCfg = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/AGV/rcam_1/Camera",
+        data_types=["rgb"],
         spawn=None,
-        height=300,
-        width=300,
+        height=640,
+        width=640,
         # update_period=0.1,
     )
 
-    lpin = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/AGV/lpin_1",
-        spawn=None,
-    )
-
-    rpin = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/AGV/rpin_1",
-        spawn=None,
-    )
-
-    niro_contact = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Niro/de_1",
-    )
-    agv_contact = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/AGV/mb_1",
-    )
+    niro_contact = ContactSensorCfg(prim_path=f"{ENV_REGEX_NS}/Niro/de_1")
+    agv_contact = ContactSensorCfg(prim_path=f"{ENV_REGEX_NS}/AGV/mb_1")
 
     # lights
     dome_light = AssetBaseCfg(
@@ -201,11 +73,6 @@ class AGVSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DistantLightCfg(color=(0.9, 0.9, 0.9), intensity=2500.0),
         init_state=AssetBaseCfg.InitialStateCfg(rot=(0.738, 0.477, 0.477, 0.0)),
     )
-
-
-##
-# MDP settings
-##
 
 
 @configclass
@@ -237,14 +104,14 @@ class ActionsCfg:
     #     scale=100.0,
     # )
 
-    joint_pri = mdp.JointEffortActionCfg(
-        asset_name="robot",
+    joint_pri = mdp.JointPositionActionCfg(
+        asset_name="agv",
         joint_names=[
             # AGV_JOINT.MB_PZ_PRI,
             AGV_JOINT.PZ_PY_PRI,
             AGV_JOINT.PY_PX_PRI,
         ],
-        scale=100.0,
+        scale=1.0,
     )
 
     # joint_pxpr = mdp.JointEffortActionCfg(
@@ -265,52 +132,34 @@ class ActionsCfg:
     #     scale=100.0,
     # )
     joint_pin = mdp.JointEffortActionCfg(
-        asset_name="robot",
+        asset_name="agv",
         joint_names=[
             # AGV_JOINT.LR_LPIN_PRI,
             AGV_JOINT.RR_RPIN_PRI,
         ],
-        scale=100.0,
+        scale=1.0,
     )
 
 
-def l_cam_rgb(env: ManagerBasedEnv):
-    camera: Camera = env.scene["lcam"]
-    observations = camera.data.output["rgb"].clone()
-    rgb = observations[:, :, :, :3]  # .flatten(start_dim=1)
-    return rgb
-
-
-def r_cam_rgb(env: ManagerBasedEnv):
-    camera: Camera = env.scene["rcam"]
-    observations = camera.data.output["rgb"].clone()[:, :, :, :3]
-    rgb = (observations.type(torch.cuda.FloatTensor)/255.0)#.view(1, -1)  # .flatten(start_dim=1)
-    # grayscale = (0.2989 * rgb[:, :, :, 0] + 
-    #              0.5870 * rgb[:, :, :, 1] + 
-    #              0.1140 * rgb[:, :, :, 2])
-    return rgb
-
-
 @configclass
-class ObservationsCfg:
+class TheiaTinyObservationCfg:
     """Observation specifications for the MDP."""
 
     @configclass
-    class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
+    class TheiaTinyFeaturesCameraPolicyCfg(ObsGroup):
+        """Observations for policy group with features extracted from RGB images with a frozen Theia-Tiny Transformer"""
 
-        # observation terms (order preserved)
-        # joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        # joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
-        # lcam = ObsTerm(func=l_cam_rgb)
-        rcam = ObsTerm(func=r_cam_rgb)
+        image = ObsTerm(
+            func=mdp.image_features,
+            params={
+                "sensor_cfg": SceneEntityCfg("rcam"),
+                "data_type": "rgb",
+                "model_name": "theia-tiny-patch16-224-cddsv",
+                "model_device": "cuda:0",
+            },
+        )
 
-        def __post_init__(self) -> None:
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    # observation groups
-    policy: PolicyCfg = PolicyCfg()
+    policy: ObsGroup = TheiaTinyFeaturesCameraPolicyCfg()
 
 
 def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor):
@@ -336,44 +185,11 @@ def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor):
         articulation_asset.write_joint_state_to_sim(default_joint_pos, default_joint_vel, env_ids=env_ids)
 
 
-def initial_pin_position(env, env_ids) -> torch.Tensor:
-    r_pin: RigidObject = env.scene["rpin"]
-    l_pin: RigidObject = env.scene["lpin"]
-    r_pin_rel = torch.tensor([0, .02, .479], device="cuda:0")
-    l_pin_rel = torch.tensor([0, -.02, .479], device="cuda:0")
-    r_pin.data.update(1)
-    r_pin_pos_w = torch.add(r_pin.data.root_pos_w, r_pin_rel)
-    l_pin_pos_w = torch.add(l_pin.data.root_pos_w, l_pin_rel)
-    l_hole_pos_w = hole_positions(env, False)
-    r_hole_pos_w = hole_positions(env, True)
-    l_pin_pos_w = pin_positions(env, False)
-    r_pin_pos_w = pin_positions(env, True)
-    distance_l = torch.sub(l_pin_pos_w, l_hole_pos_w)
-    distance_r = torch.sub(r_pin_pos_w, r_hole_pos_w)
-    global init_distances_l
-    init_distances_l = torch.norm(distance_l, dim=1)
-    global init_distances_r
-    init_distances_r = torch.norm(distance_r, dim=1)
-
-    r_hole_z = r_hole_pos_w[:, 2]
-    r_pin_z = r_pin_pos_w[:, 2]
-    global init_z_distance_r
-    init_z_distance_r = torch.sub(r_hole_z, r_pin_z)
-
-    r_hole_xy = r_hole_pos_w[:, 0:1]
-    r_pin_xy = r_pin_pos_w[:, 0:1]
-
-    global init_xy_distance_r
-    init_xy_distance_r = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
-
-    # print(f"rinit: {init_distances_r}")
-
-
 def randomize_joints_by_offset(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
     position_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
 ):
     asset: Articulation = env.scene[asset_cfg.name]
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
@@ -388,7 +204,7 @@ def randomize_object_position(
     env_ids: torch.Tensor,
     xy_position_range: tuple[float, float],
     z_position_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
 ):
     rigid_object = env.scene.rigid_objects[asset_cfg.name]
     # obtain default and deal with the offset for env origins
@@ -402,22 +218,114 @@ def randomize_object_position(
     xy_random_offsets = torch.tensor(
         np.random.uniform(xy_low, xy_high, size=(default_root_state.shape[0], 2)),  # For X and Y only
         dtype=default_root_state.dtype,
-        device=default_root_state.device
+        device=default_root_state.device,
     )
-    
+
     # Random offsets for Z coordinate
     z_random_offsets = torch.tensor(
         np.random.uniform(z_low, z_high, size=(default_root_state.shape[0], 1)),  # For Z only
         dtype=default_root_state.dtype,
-        device=default_root_state.device
+        device=default_root_state.device,
     )
-    
+
     # Apply random offsets to the X, Y, and Z coordinates
     default_root_state[:, 0:2] += xy_random_offsets  # Apply to X and Y coordinates
-    default_root_state[:, 2:3] += z_random_offsets   # Apply to Z coordinate
+    default_root_state[:, 2:3] += z_random_offsets  # Apply to Z coordinate
 
     # set into the physics simulatio
     rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
+
+
+class pin_reward(TermBase):
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
+        super().__init__(cfg, env)
+        self.init_distance = torch.zeros(env.num_envs, device=env.device)
+        self.init_pin_pos = torch.zeros(
+            (
+                env.num_envs,
+                3,
+            ),
+            device=env.device,
+        )
+        self.init_hole_pos = torch.zeros(
+            (
+                env.num_envs,
+                3,
+            ),
+            device=env.device,
+        )
+
+    def reset(self, env_ids: torch.Tensor):
+        pin_pos_w = self.pin_positions(self.cfg.params["right"], env_ids)
+        hole_pos_w = self.hole_positions(self.cfg.params["right"], env_ids)
+
+        self.init_distance[env_ids] = euclidean_distance(pin_pos_w, hole_pos_w)
+        self.init_pin_pos[env_ids] = pin_pos_w
+        self.init_hole_pos[env_ids] = hole_pos_w
+
+    def pin_positions(self, right: bool = True, env_ids=None):
+        pin_idx = self._env.scene.articulations["agv"].find_joints(
+            AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI
+        )[0]
+        pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[env_ids, pin_idx, :]
+        pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
+        pin_pos_w = torch.add(pin_root_pos, pin_rel)
+        return pin_pos_w.squeeze(1)
+
+    def hole_positions(self, right: bool = True, env_ids=None):
+        niro: RigidObject = self._env.scene.rigid_objects["niro"]
+        niro_pos = niro.data.root_pos_w[env_ids]
+        hole_rel = torch.tensor([0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0")
+        hole_pos_w = torch.add(niro_pos, hole_rel)
+        return hole_pos_w.squeeze(1)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    ) -> torch.Tensor:
+        pin_pos_w = all_pin_positions(env, right)
+        hole_pos_w = all_hole_positions(env, right)
+        distance = euclidean_distance(pin_pos_w, hole_pos_w)
+
+        curr_pin_pos_w = pin_pos_w
+        curr_pin_to_hole = distance
+
+        init_pin_to_cur_pin = euclidean_distance(self.init_pin_pos, curr_pin_pos_w)
+
+        dist3 = init_pin_to_cur_pin + curr_pin_to_hole - self.init_distance
+        rew = dist3**3
+
+        xyz_rew = (self.init_distance - curr_pin_to_hole) ** 3
+
+        reward = xyz_rew - rew
+
+        self.prev_values = {
+            "pin_pos": pin_pos_w,
+            "hole_pos": hole_pos_w,
+            "distance": distance,
+        }
+
+        return reward
+
+
+def randomize_color(env: ManagerBasedEnv, env_ids: torch.Tensor):
+    object_names = ["AGV", "Niro"]
+    material_names = ["OmniSurfaceLite", "material_silver"]
+    property_names = [
+        "Shader.inputs:diffuse_reflection_color",
+        "Shader.inputs:diffuse_color_constant",
+    ]
+    stage = stage_utils.get_current_stage()
+
+    for idx, object_name in enumerate(object_names):
+        for env_id in env_ids:
+            color = Gf.Vec3f(random.random(), random.random(), random.random())
+            color_spec = stage.GetAttributeAtPath(
+                f"/World/envs/env_{env_id}/{object_name}/Looks/{material_names[idx]}/{property_names[idx]}"
+            )
+            color_spec.Set(color)
 
 
 @configclass
@@ -430,12 +338,12 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg(
-                "robot",
+                "agv",
                 joint_names=[
                     # AGV_JOINT.MB_PZ_PRI,
                     AGV_JOINT.PZ_PY_PRI,
                     AGV_JOINT.PY_PX_PRI,
-                ]
+                ],
             ),
             "position_range": (-0.05, 0.05),
         },
@@ -446,11 +354,11 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg(
-                "robot",
+                "agv",
                 joint_names=[
                     # AGV_JOINT.LR_LPIN_PRI,
                     AGV_JOINT.RR_RPIN_PRI,
-                ]
+                ],
             ),
             "position_range": (0, 0),
             "velocity_range": (0, 0),
@@ -467,122 +375,52 @@ class EventCfg:
     #     },
     # )
 
+    randomize_color = EventTerm(
+        func=randomize_color,
+        mode="reset",
+    )
+
     reset_niro_position = EventTerm(
         func=randomize_object_position,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("niro"),
             "xy_position_range": (-0.05, 0.05),
-            "z_position_range": (-0.03, 0.03)
+            "z_position_range": (-0.03, 0.03),
         },
     )
 
-    init_position = EventTerm(
-        func=initial_pin_position,
-        mode="reset",
-    )
+
+def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
+    pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
+    pin_root_pos = env.scene.articulations["agv"].data.body_pos_w[:, pin_idx, :]
+    pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
+    pin_pos_w = torch.add(pin_root_pos, pin_rel)
+    return pin_pos_w.squeeze(1)
 
 
-def pin_positions(env: ManagerBasedRLEnv, right: bool = True):
-    pin: RigidObject = env.scene[f"{'r' if right else 'l'}pin"]
-    pin_rel = torch.tensor([0, 0.02 if right else -0.02, .479], device="cuda:0") # 0.479
-    pin_pos_w = torch.add(pin.data.root_pos_w, pin_rel)
-    return pin_pos_w
-
-
-def hole_positions(env: ManagerBasedRLEnv, right: bool = True):
-    niro: RigidObject = env.scene["niro"]
-    niro_pos = (
-        niro.data.root_pos_w
-    )  # torch.tensor([-0.5000,  0.0000,  1.1000], device="cuda:0")
+def all_hole_positions(env: ManagerBasedRLEnv, right: bool = True):
+    niro: RigidObject = env.scene.rigid_objects["niro"]
+    niro_pos = niro.data.root_pos_w
     hole_rel = torch.tensor([0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0")
     hole_pos_w = torch.add(niro_pos, hole_rel)
-
-    # l hole [.455, .693, .0654] 33.5 (1)/ 50.8(2) / 65.4(3) / 75.5(all)
-    # niro [-0.5000,  0.0000,  1.1000]
-    # lpin [0, .163, .514 / .479]
-    return hole_pos_w
+    return hole_pos_w.squeeze(1)
 
 
-def r_pin_xy(env):
-    r_hole_pos_w = hole_positions(env, True)
-    r_pin_pos_w = pin_positions(env, True)
-
-    r_hole_xy = r_hole_pos_w[:, 0:1]
-    r_pin_xy = r_pin_pos_w[:, 0:1]
-
-    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
-    rew = torch.sub(init_xy_distance_r, xy_distance)
-    return rew * 100
+def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
+    pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
+    pin_vel_w = env.scene.articulations["agv"].data.body_vel_w[:, pin_idx, :]
+    return pin_vel_w.squeeze(1)
 
 
-def r_pin_z(env):
-    r_hole_pos_w = hole_positions(env, True)
-    r_pin_pos_w = pin_positions(env, True)
-    r_hole_z = r_hole_pos_w[:, 2]
-    r_pin_z = r_pin_pos_w[:, 2]
-
-    z_dist = torch.sub(r_hole_z, r_pin_z)
-    rew = torch.sub(init_z_distance_r, z_dist)
-    return rew * 100
+def euclidean_distance(src, dist):
+    distance = torch.sqrt(torch.sum((src - dist) ** 2, dim=src.ndim - 1) + 1e-8)
+    return distance
 
 
-def r_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    r_hole_pos_w = hole_positions(env, True)
-    r_pin_pos_w = pin_positions(env, True)
-    distance_r = torch.sub(r_pin_pos_w, r_hole_pos_w)
-    distances = torch.norm(distance_r, dim=1)
-    # print(distances)
-
-    # global init_distances_l
-    # rew = torch.zeros_like(distances)
-
-    # for i in range(distances.size(0)):
-    #     if distances[i] > init_distances_l[i]:
-    #         rew[i] = init_distances_l[i] - distances[i]
-    #         # rew[i] = -1 / (distances[i] + 1e-5)
-    #     else:
-    #         rew[i] = torch.exp(-distances[i])
-    # rew = torch.exp(-distances)
-    rew = torch.sub(init_distances_r, distances) * 100
-    # negative_mask = rew < 0
-    # rew = torch.where(negative_mask, rew * 10, rew)
-    
-    return rew
-
-
-def l_pin_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    l_hole_pos_w = hole_positions(env, False)
-    l_pin_pos_w = pin_positions(env, False)
-    distance_l = torch.sub(l_pin_pos_w, l_hole_pos_w)
-    distances = torch.norm(distance_l, dim=1)
-    rew = torch.exp(-distances)
-    return rew
-
-def penalty_z(env) -> torch.Tensor:
-    # l_hole_pos_w = hole_positions(env, False)
-    r_hole_pos_w = hole_positions(env, True)
-    # l_pin_pos_w = pin_positions(env, False)
-    r_pin_pos_w = pin_positions(env, True)
-
-    r_hole_xy = r_hole_pos_w[:, 0:1]
-    r_pin_xy = r_pin_pos_w[:, 0:1]
-
-    r_hole_z = r_hole_pos_w[:, 2]
-    r_pin_z = r_pin_pos_w[:, 2]
-
-    z_condition = r_pin_z >= r_hole_z
-
-    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
-    xy_condition = xy_distance >= 0.01
-
-    result = torch.where(z_condition & xy_condition, torch.tensor(True), torch.tensor(False))
-    return result
-
-    # combined_condition = z_condition & xy_condition
-    # penalty = torch.where(combined_condition, torch.tensor(xy_distance * 10, device='cuda:0'), torch.tensor(0.0, device='cuda:0'))
-
-    # return penalty
+def power_reward(reward) -> torch.Tensor:
+    r = torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
+    return r
 
 
 @configclass
@@ -590,36 +428,35 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # (1) Constant running reward
-    alive = RewTerm(func=mdp.is_alive, weight=1.0)
+    # alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
+    # terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
-    # r_pin = RewTerm(func=r_pin_reward, weight=1.0)
+    r_pin = RewTerm(func=pin_reward, weight=1.0, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
-    r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
-    r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
+    # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
+    # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
 
-    
     # agv_undesired_contacts = RewTerm(
     #     func=mdp.undesired_contacts,
     #     weight=-5.0,
     #     params={
-    #         "sensor_cfg": SceneEntityCfg("agv_contact"), 
+    #         "sensor_cfg": SceneEntityCfg("agv_contact"),
     #         "threshold": 1.0,
     #     },
     # )
-    
-    niro_undesired_contacts = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "niro_contact",
-                # body_names=".*THIGH"
-            ), 
-            "threshold": 1.0,
-        },
-    )
+
+    # niro_undesired_contacts = RewTerm(
+    #     func=mdp.undesired_contacts,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "niro_contact",
+    #             # body_names=".*THIGH"
+    #         ),
+    #         "threshold": 1.0,
+    #     },
+    # )
 
     # (3) Primary task: keep pole upright
     # pole_pos = RewTerm(
@@ -633,7 +470,7 @@ class RewardsCfg:
     #     weight=-0.1,
     #     params={
     #         "asset_cfg": SceneEntityCfg(
-    #             "robot", 
+    #             "robot",
     #             joint_names=[
     #                 # AGV_JOINT.MB_PZ_PRI,
     #                 AGV_JOINT.PZ_PY_PRI,
@@ -652,40 +489,23 @@ class RewardsCfg:
     # )
 
 
-def termination_accel(
-    env: ManagerBasedRLEnv,
-    limit_acc: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    asset: RigidObject = env.scene[asset_cfg.name]
-    acc = asset.data.body_lin_acc_w
-    magnitudes = torch.norm(acc, dim=2)
-    mean_magnitude = magnitudes.mean()
-    return mean_magnitude > limit_acc
+def pin_correct(env, right: bool = True) -> torch.Tensor:
+    r_hole_pos_w = all_hole_positions(env, right)
+    r_pin_pos_w = all_pin_positions(env, right)
 
+    r_hole_xy = r_hole_pos_w[:, 0:1]
+    r_pin_xy = r_pin_pos_w[:, 0:1]
 
-def is_pin_in_hole(env: ManagerBasedRLEnv) -> torch.Tensor:
-    r_hole_pos_w = hole_positions(env, True)
-    r_pin_pos_w = pin_positions(env, True)
-    distance_r = torch.sub(r_pin_pos_w, r_hole_pos_w)
-    distances = torch.norm(distance_r, dim=1)
+    r_hole_z = r_hole_pos_w[:, 2]
+    r_pin_z = r_pin_pos_w[:, 2]
 
-def out_of_limit(env: ManagerBasedRLEnv) -> torch.Tensor:
-    # l_hole_pos_w = hole_positions(env, False)
-    r_hole_pos_w = hole_positions(env, True)
-    # l_pin_pos_w = pin_positions(env, False)
-    r_pin_pos_w = pin_positions(env, True)
+    z_condition = r_pin_z >= r_hole_z
 
-    distance_r = torch.sub(r_pin_pos_w[:, :2], r_hole_pos_w[:, :2])
-    distances = torch.norm(distance_r, dim=1)
-    return distances > 0.05
+    xy_distance = torch.norm(torch.sub(r_hole_xy, r_pin_xy), dim=1)
+    xy_condition = xy_distance >= 0.01
 
-
-def undesired_contacts(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    net_contact_forces = contact_sensor.data.net_forces_w_history
-    is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > 0
-    return is_contact
+    result = torch.where(z_condition & xy_condition, torch.tensor(True), torch.tensor(False))
+    return result
 
 
 @configclass
@@ -705,11 +525,11 @@ class TerminationsCfg:
     #         "limit_acc": 1.0,
     #     },
     # )
-    
+
     # pole_out_of_bounds = DoneTerm(func=out_of_limit)
     # pole_contacts = DoneTerm(func=undesired_contacts)
 
-    pin_in_hole = DoneTerm(func=penalty_z)
+    pin_correct = DoneTerm(func=pin_correct, params={"right": True})
 
 
 @configclass
@@ -719,19 +539,12 @@ class CurriculumCfg:
     pass
 
 
-##
-# Environment configuration
-##
-
-
 @configclass
 class AGVEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the locomotion velocity-tracking environment."""
-
     # Scene settings
     scene: AGVSceneCfg = AGVSceneCfg(num_envs=4, env_spacing=3.0)
     # Basic settings
-    observations: ObservationsCfg = ObservationsCfg()
+    observations: TheiaTinyObservationCfg = TheiaTinyObservationCfg()
     actions: ActionsCfg = ActionsCfg()
     events: EventCfg = EventCfg()
     # MDP settings
@@ -749,6 +562,7 @@ class AGVEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 5
         # viewer settings
         self.viewer.eye = (8.0, 0.0, 5.0)
+        # self.viewer.lookat = (0.0, 0.0, 2.5)
         # simulation settings
         self.sim.dt = 1 / 120
         self.sim.render_interval = self.decimation
