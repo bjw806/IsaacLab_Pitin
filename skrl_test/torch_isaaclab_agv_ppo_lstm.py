@@ -5,16 +5,17 @@ from skrl.agents.torch.ppo.ppo_rnn import PPO_RNN, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
+from skrl.models.torch import DeterministicMixin, MultivariateGaussianMixin, Model
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 from lr_schedulers import CosineAnnealingWarmUpRestarts
+from skrl.resources.schedulers.torch import KLAdaptiveRL
 
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
 # torch.autograd.set_detect_anomaly(True)
 
 
-class Policy(GaussianMixin, Model):
+class Policy(MultivariateGaussianMixin, Model):
     def __init__(
         self,
         observation_space,
@@ -31,7 +32,7 @@ class Policy(GaussianMixin, Model):
         sequence_length=4,
     ):
         Model.__init__(self, observation_space, action_space, device)
-        GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
+        MultivariateGaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
         self.num_envs = num_envs
         self.num_layers = num_layers
@@ -47,7 +48,10 @@ class Policy(GaussianMixin, Model):
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 128),
+            nn.Linear(self.hidden_size, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Linear(128, 64),
@@ -157,7 +161,10 @@ class Value(DeterministicMixin, Model):
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 128),
+            nn.Linear(self.hidden_size, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.Linear(128, 64),
@@ -240,7 +247,7 @@ class Value(DeterministicMixin, Model):
 env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
 env = wrap_env(env, wrapper="isaaclab-single-agent")
 device = env.device
-replay_buffer_size = 1024 * 1 * env.num_envs
+replay_buffer_size = 1024 * 4 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
@@ -250,8 +257,8 @@ model_cfg = dict(
     device=env.device,
     num_envs=env.num_envs,
     num_layers=2,
-    hidden_size=256,
-    sequence_length=16,
+    hidden_size=512,
+    sequence_length=256,
 )
 models = {}
 models["policy"] = Policy(
@@ -269,13 +276,13 @@ models["value"] = Value(
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 4
+cfg["learning_epochs"] = 64
 cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
 # cfg["lambda"] = 0.95
 cfg["learning_rate"] = 0  # CosineAnnealingWarmUpRestarts
-cfg["grad_norm_clip"] = 1.0  # gradient clipping
-cfg["ratio_clip"] = 0.1  # 정책 클리핑 (정책이 학습 초기에 과하게 수렴되지 않도록 작은 값을 설정)
+# cfg["grad_norm_clip"] = 1.0  # gradient clipping
+# cfg["ratio_clip"] = 0.1  # 정책 클리핑 (정책이 학습 초기에 과하게 수렴되지 않도록 작은 값을 설정)
 # cfg["value_clip"] = 0.2
 # cfg["clip_predicted_values"] = False
 # cfg["entropy_loss_scale"] = 0.05
@@ -288,8 +295,8 @@ cfg["learning_rate_scheduler_kwargs"] = {
     "T_0": 16 * cfg["learning_epochs"],  # 첫 주기의 길이
     "T_mult": 2,  # 매 주기마다 주기의 길이를 두배로 늘림
     "T_up": cfg["learning_epochs"],  # warm-up 주기
-    "eta_max": 5e-4,  # 최대 학습률
-    "gamma": 0.6,  # 학습률 감소율
+    "eta_max": 1e-4,  # 최대 학습률
+    "gamma": 0.8,  # 학습률 감소율
 }
 
 cfg["experiment"]["write_interval"] = 1024

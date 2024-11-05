@@ -70,7 +70,7 @@ class AGVEnvCfg(DirectRLEnvCfg):
     dt = 1 / 240
     decimation = 2
     episode_length_s = 5.0
-    action_scale = 100.0  # [N]
+    action_scale = 1  # [N]
     num_channels = 4
     LSTM = True
     # events = AGVEventCfg()
@@ -296,7 +296,7 @@ class AGVEnv(DirectRLEnv):
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PZ_PY_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._PY_PX_PRI_idx)
         # self._agv.set_joint_effort_target(self.actions, joint_ids=self._RR_RPIN_PRI_idx)
-        self._agv.set_joint_effort_target(self.actions, joint_ids=self.actuated_dof_indices)
+        self._agv.set_joint_position_target(self.actions, joint_ids=self.actuated_dof_indices)
 
     def _get_observations(self) -> dict:
         self.calculate_values()
