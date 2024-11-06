@@ -266,21 +266,9 @@ class PinRewBase():
 class pin_pos_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
-        self.init_distance = torch.zeros(env.num_envs, device=env.device)
-        self.init_pin_pos = torch.zeros(
-            (
-                env.num_envs,
-                3,
-            ),
-            device=env.device,
-        )
-        self.init_hole_pos = torch.zeros(
-            (
-                env.num_envs,
-                3,
-            ),
-            device=env.device,
-        )
+        self.init_pin_pos = all_pin_positions(env, cfg.params["right"])
+        self.init_hole_pos = all_hole_positions(env, cfg.params["right"])
+        self.init_distance = euclidean_distance(self.init_pin_pos, self.init_hole_pos)
 
     def reset(self, env_ids: torch.Tensor):
         pin_pos_w = self.pin_positions(self.cfg.params["right"], env_ids)
@@ -297,8 +285,7 @@ class pin_pos_reward(TermBase, PinRewBase):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
         pin_pos_w = all_pin_positions(env, right)
-        hole_pos_w = all_hole_positions(env, right)
-        distance = euclidean_distance(pin_pos_w, hole_pos_w)
+        distance = euclidean_distance(pin_pos_w, self.init_hole_pos)
 
         curr_pin_pos_w = pin_pos_w
         curr_pin_to_hole = distance
@@ -311,25 +298,10 @@ class pin_pos_reward(TermBase, PinRewBase):
         xyz_rew = (self.init_distance - curr_pin_to_hole) ** 3
 
         reward = xyz_rew - rew
-
-        self.prev_values = {
-            "pin_pos": pin_pos_w,
-            "hole_pos": hole_pos_w,
-            "distance": distance,
-        }
-
         return reward
 
 
 class pin_vel_reward(TermBase, PinRewBase):
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
-        super().__init__(cfg, env)
-        self.init_pin_vel = torch.zeros(env.num_envs, device=env.device)
-
-    def reset(self, env_ids: torch.Tensor):
-        pin_vel_w = self.pin_velocities(self.cfg.params["right"], env_ids)
-        self.init_pin_vel[env_ids] = pin_vel_w
-
     def __call__(
         self,
         env: ManagerBasedRLEnv,
