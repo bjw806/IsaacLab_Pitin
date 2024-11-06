@@ -238,9 +238,7 @@ def randomize_object_position(
 
 class PinRewBase:
     def pin_positions(self, right: bool = True, env_ids=None):
-        pin_idx = self._env.scene.articulations["agv"].find_joints(
-            AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI
-        )[0]
+        pin_idx = self._env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
         pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[env_ids, pin_idx, :]
         pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
         pin_pos_w = torch.add(pin_root_pos, pin_rel)
@@ -254,9 +252,7 @@ class PinRewBase:
         return hole_pos_w.squeeze(1)
 
     def pin_velocities(self, right: bool = True, env_ids=None):
-        pin_idx = self._env.scene.articulations["agv"].find_joints(
-            AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI
-        )[0]
+        pin_idx = self._env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
         pin_vel_w = self._env.scene.articulations["agv"].data.body_vel_w[env_ids, pin_idx, :]
         pin_lv = pin_vel_w.squeeze(1)[..., :3]
         pin_v_norm = torch.norm(pin_lv, dim=-1)
@@ -326,8 +322,23 @@ class pin_torque_reward(TermBase, PinRewBase):
                 AGV_JOINT.PY_PX_PRI,
             ]
         )[0]
-        torques = self._env.scene.articulations["agv"].data.applied_torque[:,joint_idx]
-        return torch.sum(torques ** 2, dim=1)
+        torques = self._env.scene.articulations["agv"].data.applied_torque[:, joint_idx]
+        return torch.sum(torques**2, dim=1)
+
+
+class draw_lines(TermBase):
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    ) -> torch.Tensor:
+        pin_list = all_pin_positions(env, right).tolist()
+        hole_list = all_hole_positions(env, right).tolist()
+        draw = _debug_draw.acquire_debug_draw_interface()
+        draw.clear_lines()
+        draw.draw_lines(pin_list, hole_list, [(1, 1, 1, 1)] * self.num_envs, [5] * self.num_envs)
+        return torch.zeros(self.num_envs, device="cuda:0").bool()
 
 
 class pin_correct_reward(TermBase, PinRewBase):
@@ -359,9 +370,7 @@ class pin_correct_reward(TermBase, PinRewBase):
         pos_correct = torch.logical_and(xy_correct, z_correct)
 
         reward = (
-            pos_correct.int()
-            * torch.clamp(1 / pin_vel, max=100, min=10)
-            * torch.clamp(1 / distance, max=100, min=10)
+            pos_correct.int() * torch.clamp(1 / pin_vel, max=100, min=10) * torch.clamp(1 / distance, max=100, min=10)
         )
         return reward
 
@@ -448,7 +457,7 @@ class EventCfg:
 
 
 def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
-    pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
+    pin_idx = env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
     pin_root_pos = env.scene.articulations["agv"].data.body_pos_w[:, pin_idx, :]
     pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
     pin_pos_w = torch.add(pin_root_pos, pin_rel)
@@ -584,6 +593,7 @@ class TerminationsCfg:
     # pole_contacts = DoneTerm(func=undesired_contacts)
 
     pin_correct = DoneTerm(func=pin_correct, params={"right": True})
+    draw_lines = DoneTerm(func=draw_lines, params={"right": True})
 
 
 @configclass
