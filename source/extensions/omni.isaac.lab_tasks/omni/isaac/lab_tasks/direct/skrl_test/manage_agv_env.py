@@ -461,7 +461,7 @@ class RewardsCfg:
     # terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
     r_pin_pos = RewTerm(func=pin_pos_reward, weight=1.0, params={"right": True})
-    r_pin_vel = RewTerm(func=pin_vel_reward, weight=1.0, params={"right": True})
+    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-0.1, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
     # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
