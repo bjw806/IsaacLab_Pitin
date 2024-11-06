@@ -55,8 +55,8 @@ class AGVSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        height=300,
-        width=300,
+        height=224,
+        width=224,
         # update_period=0.1,
     )
 
@@ -458,7 +458,7 @@ class RewardsCfg:
     # terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
     r_pin_pos = RewTerm(func=pin_pos_reward, weight=1.0, params={"right": True})
-    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-0.1, params={"right": True})
+    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-0.01, params={"right": True})
     r_pin_correct = RewTerm(func=pin_correct_reward, weight=1.0, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
