@@ -236,10 +236,7 @@ def randomize_object_position(
     rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
 
-class PinRewBase(TermBase):
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
-        super().__init__(cfg, env)
-
+class PinRewBase():
     def pin_positions(self, right: bool = True, env_ids=None):
         pin_idx = self._env.scene.articulations["agv"].find_joints(
             AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI
@@ -266,7 +263,7 @@ class PinRewBase(TermBase):
         return pin_v_norm
 
 
-class pin_pos_reward(PinRewBase):
+class pin_pos_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
         self.init_distance = torch.zeros(env.num_envs, device=env.device)
@@ -324,7 +321,7 @@ class pin_pos_reward(PinRewBase):
         return reward
 
 
-class pin_vel_reward(PinRewBase):
+class pin_vel_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
         self.init_pin_vel = torch.zeros(env.num_envs, device=env.device)
@@ -343,7 +340,7 @@ class pin_vel_reward(PinRewBase):
         return pin_vel_w**2
 
 
-class pin_correct_reward(PinRewBase):
+class pin_correct_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
 
