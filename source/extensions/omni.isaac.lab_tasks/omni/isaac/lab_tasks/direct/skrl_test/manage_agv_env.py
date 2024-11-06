@@ -131,7 +131,7 @@ class ActionsCfg:
     #     ],
     #     scale=100.0,
     # )
-    joint_pin = mdp.JointEffortActionCfg(
+    joint_pin = mdp.JointPositionActionCfg(
         asset_name="agv",
         joint_names=[
             # AGV_JOINT.LR_LPIN_PRI,
