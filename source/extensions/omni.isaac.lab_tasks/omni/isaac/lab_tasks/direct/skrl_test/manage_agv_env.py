@@ -158,6 +158,13 @@ class TheiaTinyObservationCfg:
                 "model_device": "cuda:0",
             },
         )
+        # joint_pos = ObsTerm(func=mdp.joint_pos_rel, params={"asset_cfg": SceneEntityCfg("agv")})
+        # joint_vel = ObsTerm(func=mdp.joint_vel_rel, params={"asset_cfg": SceneEntityCfg("agv")})
+        # actions = ObsTerm(func=mdp.last_action)
+
+        # def __post_init__(self):
+        #     self.enable_corruption = True
+        #     self.concatenate_terms = True
 
     policy: ObsGroup = TheiaTinyFeaturesCameraPolicyCfg()
 
@@ -240,7 +247,7 @@ class PinRewBase:
     def pin_positions(self, right: bool = True, env_ids=None):
         pin_idx = self._env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
         pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[env_ids, pin_idx, :]
-        pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
+        pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.45], device="cuda:0")  # 0.479
         pin_pos_w = torch.add(pin_root_pos, pin_rel)
         return pin_pos_w.squeeze(1)
 
@@ -361,17 +368,16 @@ class pin_correct_reward(TermBase, PinRewBase):
         pin_xy_pos = pin_pos[..., :2]
         pin_z_pos = pin_pos[..., 2]
         hole_xy_pos = self.init_hole_pos[..., :2]
+        hole_z_pos = self.init_hole_pos[..., 2]
 
         xy_distance = euclidean_distance(hole_xy_pos, pin_xy_pos)
         xy_correct = xy_distance < 0.01
-        z_correct = torch.logical_and(0.77 > pin_z_pos, pin_z_pos > 0.67)
+        z_correct = torch.logical_and(hole_z_pos + 0.02 > pin_z_pos, pin_z_pos > hole_z_pos - 0.01)
 
         distance = euclidean_distance(self.init_hole_pos, pin_pos)
         pos_correct = torch.logical_and(xy_correct, z_correct)
 
-        reward = (
-            pos_correct.int() * torch.clamp(1 / pin_vel, max=100, min=10) * torch.clamp(1 / distance, max=100, min=10)
-        )
+        reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
         return reward
 
 
@@ -459,7 +465,7 @@ class EventCfg:
 def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
     pin_idx = env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
     pin_root_pos = env.scene.articulations["agv"].data.body_pos_w[:, pin_idx, :]
-    pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.479], device="cuda:0")
+    pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.45], device="cuda:0")  # 0.479
     pin_pos_w = torch.add(pin_root_pos, pin_rel)
     return pin_pos_w.squeeze(1)
 
@@ -500,9 +506,11 @@ class RewardsCfg:
     # terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
 
     r_pin_pos = RewTerm(func=pin_pos_reward, weight=1000, params={"right": True})
-    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-10, params={"right": True})
-    r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
-    r_pin_correct = RewTerm(func=pin_correct_reward, weight=1, params={"right": True})
+    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-100, params={"right": True})
+    # joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
+    # r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
+    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-6, params={"asset_cfg": SceneEntityCfg("agv")})
+    # r_pin_correct = RewTerm(func=pin_correct_reward, weight=0.1, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
     # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
@@ -516,17 +524,26 @@ class RewardsCfg:
     #     },
     # )
 
-    # niro_undesired_contacts = RewTerm(
-    #     func=mdp.undesired_contacts,
-    #     weight=-1.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "niro_contact",
-    #             # body_names=".*THIGH"
-    #         ),
-    #         "threshold": 1.0,
-    #     },
-    # )
+    niro_undesired_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-2,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "niro_contact",
+                # body_names=".*THIGH"
+            ),
+            "threshold": 1.0,
+        },
+    )
+
+    niro_contact_forces = RewTerm(
+        func=mdp.contact_forces,
+        weight=-5e-5,
+        params={
+            "sensor_cfg": SceneEntityCfg("niro_contact"),
+            "threshold": 1.0,
+        },
+    )
 
     # (3) Primary task: keep pole upright
     # pole_pos = RewTerm(
@@ -592,7 +609,7 @@ class TerminationsCfg:
     # pole_out_of_bounds = DoneTerm(func=out_of_limit)
     # pole_contacts = DoneTerm(func=undesired_contacts)
 
-    pin_correct = DoneTerm(func=pin_correct, params={"right": True})
+    # pin_correct = DoneTerm(func=pin_correct, params={"right": True})
     draw_lines = DoneTerm(func=draw_lines, params={"right": True})
 
 
