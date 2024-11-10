@@ -55,8 +55,8 @@ class AGVSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/AGV/rcam_1/Camera",
         data_types=["rgb"],
         spawn=None,
-        height=224,
-        width=224,
+        height=300,
+        width=300,
         # update_period=0.1,
     )
 
@@ -104,14 +104,14 @@ class ActionsCfg:
     #     scale=100.0,
     # )
 
-    joint_pri = mdp.JointPositionActionCfg(
+    joint_pri = mdp.JointEffortActionCfg(
         asset_name="agv",
         joint_names=[
             # AGV_JOINT.MB_PZ_PRI,
             AGV_JOINT.PZ_PY_PRI,
             AGV_JOINT.PY_PX_PRI,
         ],
-        scale=1.0,
+        scale=20.0,
     )
 
     # joint_pxpr = mdp.JointEffortActionCfg(
@@ -131,13 +131,13 @@ class ActionsCfg:
     #     ],
     #     scale=100.0,
     # )
-    joint_pin = mdp.JointPositionActionCfg(
+    joint_pin = mdp.JointEffortActionCfg(
         asset_name="agv",
         joint_names=[
             # AGV_JOINT.LR_LPIN_PRI,
             AGV_JOINT.RR_RPIN_PRI,
         ],
-        scale=1.0,
+        scale=30.0,
     )
 
 
@@ -352,9 +352,11 @@ class pin_correct_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
         self.init_hole_pos = all_hole_positions(env, cfg.params["right"])
+        self.init_pin_pos = all_pin_positions(env, cfg.params["right"])
 
     def reset(self, env_ids: torch.Tensor):
         self.init_hole_pos[env_ids] = self.hole_positions(self.cfg.params["right"], env_ids)
+        self.init_pin_pos[env_ids] = self.pin_positions(self.cfg.params["right"], env_ids)
 
     def __call__(
         self,
@@ -362,22 +364,35 @@ class pin_correct_reward(TermBase, PinRewBase):
         right: bool = True,
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
-        pin_pos = all_pin_positions(env, right)
-        pin_vel = all_pin_velocities(env, right)
+        # pin_pos = all_pin_positions(env, right)
+        # pin_vel = all_pin_velocities(env, right)
 
-        pin_xy_pos = pin_pos[..., :2]
-        pin_z_pos = pin_pos[..., 2]
-        hole_xy_pos = self.init_hole_pos[..., :2]
-        hole_z_pos = self.init_hole_pos[..., 2]
+        # pin_xy_pos = pin_pos[..., :2]
+        # pin_z_pos = pin_pos[..., 2]
+        # hole_xy_pos = self.init_hole_pos[..., :2]
+        # hole_z_pos = self.init_hole_pos[..., 2]
 
-        xy_distance = euclidean_distance(hole_xy_pos, pin_xy_pos)
-        xy_correct = xy_distance < 0.01
-        z_correct = torch.logical_and(hole_z_pos + 0.02 > pin_z_pos, pin_z_pos > hole_z_pos - 0.01)
+        # xy_distance = euclidean_distance(hole_xy_pos, pin_xy_pos)
+        # xy_correct = xy_distance < 0.01
+        # z_correct = torch.logical_and(hole_z_pos + 0.02 > pin_z_pos, pin_z_pos > hole_z_pos - 0.01)
 
-        distance = euclidean_distance(self.init_hole_pos, pin_pos)
-        pos_correct = torch.logical_and(xy_correct, z_correct)
+        # distance = euclidean_distance(self.init_hole_pos, pin_pos)
+        # pos_correct = torch.logical_and(xy_correct, z_correct)
 
-        reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
+        # reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
+        reward = pin_correct(env, right).int() * euclidean_distance(self.init_hole_pos, self.init_pin_pos)
+        return reward
+
+
+class pin_wrong_reward(TermBase, PinRewBase):
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    ) -> torch.Tensor:
+        penalty = pin_wrong(env, right)
+        reward = penalty.int()
         return reward
 
 
@@ -498,19 +513,16 @@ def power_reward(reward) -> torch.Tensor:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP."""
-
-    # (1) Constant running reward
-    # alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    # (2) Failure penalty
-    # terminating = RewTerm(func=mdp.is_terminated, weight=-5.0)
+    # alive = RewTerm(func=mdp.is_alive, weight=1)
+    # terminating = RewTerm(func=mdp.is_terminated, weight=-1000)
 
     r_pin_pos = RewTerm(func=pin_pos_reward, weight=1000, params={"right": True})
-    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-100, params={"right": True})
+    # r_pin_vel = RewTerm(func=pin_vel_reward, weight=-500, params={"right": True})
+    r_pin_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2e-7, params={"asset_cfg": SceneEntityCfg("agv")})
     # joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
     # r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
-    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-6, params={"asset_cfg": SceneEntityCfg("agv")})
-    # r_pin_correct = RewTerm(func=pin_correct_reward, weight=0.1, params={"right": True})
+    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
+    # r_pin_correct = RewTerm(func=pin_correct_reward, weight=1e6, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
     # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
@@ -524,6 +536,8 @@ class RewardsCfg:
     #     },
     # )
 
+    r_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-100, params={"right": True})
+
     niro_undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-2,
@@ -536,14 +550,14 @@ class RewardsCfg:
         },
     )
 
-    niro_contact_forces = RewTerm(
-        func=mdp.contact_forces,
-        weight=-5e-5,
-        params={
-            "sensor_cfg": SceneEntityCfg("niro_contact"),
-            "threshold": 1.0,
-        },
-    )
+    # niro_contact_forces = RewTerm(
+    #     func=mdp.contact_forces,
+    #     weight=-5e-5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("niro_contact"),
+    #         "threshold": 1.0,
+    #     },
+    # )
 
     # (3) Primary task: keep pole upright
     # pole_pos = RewTerm(
@@ -581,11 +595,28 @@ def pin_correct(env, right: bool = True) -> torch.Tensor:
     pin_pos_w = all_pin_positions(env, right)
     distance = euclidean_distance(hole_pos_w, pin_pos_w)
 
-    pin_pos = distance < 0.01
-    pin_vel = all_pin_velocities(env, right) + 1e-8 < 0.01
+    pin_pos = distance < 0.005
+    pin_vel = all_pin_velocities(env, right) < 0.001
     pin_correct = torch.logical_and(pin_pos, pin_vel)
 
     return pin_correct.squeeze(0)
+
+
+def pin_wrong(env, right: bool = True) -> torch.Tensor:
+    hole_pos_w = all_hole_positions(env, right)
+    pin_pos_w = all_pin_positions(env, right)
+
+    hole_y = hole_pos_w[:, 1]
+    pin_y = pin_pos_w[:, 1]
+    y_distance = torch.abs(hole_y - pin_y)
+
+    hole_z = hole_pos_w[:, 2]
+    pin_z = pin_pos_w[:, 2]
+
+    z_condition = pin_z >= hole_z - 0.02
+    y_condition = y_distance >= 0.01
+
+    return torch.logical_and(z_condition, y_condition)
 
 
 @configclass
@@ -606,7 +637,7 @@ class TerminationsCfg:
     #     },
     # )
 
-    # pole_out_of_bounds = DoneTerm(func=out_of_limit)
+    # pole_out_of_bounds = DoneTerm(func=pin_wrong, params={"right": True})
     # pole_contacts = DoneTerm(func=undesired_contacts)
 
     # pin_correct = DoneTerm(func=pin_correct, params={"right": True})
