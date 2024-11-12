@@ -1,6 +1,10 @@
+import random
+
 import numpy as np
+import omni.isaac.core.utils.stage as stage_utils
 import omni.isaac.lab.sim as sim_utils
 import omni.isaac.lab.utils.math as math_utils
+import omni.isaac.lab.utils.string as string_utils
 import omni.isaac.lab_tasks.manager_based.classic.cartpole.mdp as mdp
 import torch
 from omni.isaac.debug_draw import _debug_draw
@@ -13,19 +17,17 @@ from omni.isaac.lab.assets import (
 )
 from omni.isaac.lab.envs import ManagerBasedEnv, ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 from omni.isaac.lab.managers import EventTermCfg as EventTerm
+from omni.isaac.lab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
+from omni.isaac.lab.managers import ManagerTermBase as TermBase
 from omni.isaac.lab.managers import ObservationGroupCfg as ObsGroup
 from omni.isaac.lab.managers import ObservationTermCfg as ObsTerm
 from omni.isaac.lab.managers import RewardTermCfg as RewTerm
-from omni.isaac.lab.managers import SceneEntityCfg
 from omni.isaac.lab.managers import TerminationTermCfg as DoneTerm
-from omni.isaac.lab.managers import ManagerTermBase as TermBase
 from omni.isaac.lab.scene import InteractiveSceneCfg
-from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg, TiledCamera, TiledCameraCfg
+from omni.isaac.lab.sensors import ContactSensorCfg, TiledCameraCfg
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab_tasks.direct.skrl_test.agv_cfg import AGV_CFG, AGV_JOINT
-import omni.isaac.core.utils.stage as stage_utils
-from pxr import Gf, UsdGeom
-import random
+from pxr import Gf
 
 ENV_REGEX_NS = "/World/envs/env_.*"
 
@@ -380,7 +382,7 @@ class pin_correct_reward(TermBase, PinRewBase):
         # pos_correct = torch.logical_and(xy_correct, z_correct)
 
         # reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
-        reward = pin_correct(env, right).int() * torch.clamp(1 / pin_vel ** 2, max=1000, min=0.001)
+        reward = pin_correct(env, right).int() * torch.clamp(1 / pin_vel**2, max=1000, min=0.001)
         return reward
 
 
@@ -401,7 +403,7 @@ class pin_wrong_reward(TermBase, PinRewBase):
         penalty = pin_wrong(env, right)
         pin_pos = all_pin_positions(env, right)
         reward = penalty.int() * euclidean_distance(self.init_hole_pos, pin_pos)
-        return reward ** 2
+        return reward**2
 
 
 def randomize_color(env: ManagerBasedEnv, env_ids: torch.Tensor):
@@ -507,7 +509,7 @@ def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
 
     pin_lv = pin_vel_w.squeeze(1)[..., :3]
     pin_v_norm = torch.norm(pin_lv, dim=-1)
-    return pin_v_norm
+    return pin_v_norm + 1e-8
 
 
 def euclidean_distance(src, dist):
@@ -517,6 +519,34 @@ def euclidean_distance(src, dist):
 
 def power_reward(reward) -> torch.Tensor:
     return torch.where(reward < 0, -((reward - 1) ** 2), (reward + 1) ** 2)
+
+
+class power_consumption(ManagerTermBase):
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset: Articulation = env.scene[cfg.params["asset_cfg"].name]
+        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+        index_list, _, value_list = string_utils.resolve_matching_names_values(
+            cfg.params["gear_ratio"],
+            asset.joint_names,
+        )
+        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
+        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg, right: bool = True
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        joints = [
+            AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI,
+            AGV_JOINT.PY_PX_PRI,
+            AGV_JOINT.PZ_PY_PRI,
+        ]
+        idx = asset.find_joints(joints)[0]
+        # return power = torque * velocity (here actions: joint torques)
+        return torch.sum(
+            torch.abs(env.action_manager.action * asset.data.joint_vel[:, idx] * self.gear_ratio_scaled[:, idx]),
+            dim=-1,
+        )
 
 
 @configclass
@@ -529,8 +559,8 @@ class RewardsCfg:
     # r_pin_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2e-7, params={"asset_cfg": SceneEntityCfg("agv")})
     # joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
     # r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
-    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-2e-4, params={"asset_cfg": SceneEntityCfg("agv")})
-    r_pin_correct = RewTerm(func=pin_correct_reward, weight=0.02, params={"right": True})
+    # joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-2e-4, params={"asset_cfg": SceneEntityCfg("agv")})
+    r_pin_correct = RewTerm(func=pin_correct_reward, weight=1, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
     # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
@@ -555,6 +585,27 @@ class RewardsCfg:
                 # body_names=".*THIGH"
             ),
             "threshold": 1.0,
+        },
+    )
+
+    energy = RewTerm(
+        func=power_consumption,
+        weight=-5,
+        params={
+            "asset_cfg": SceneEntityCfg("agv"),
+            "right": True,
+            "gear_ratio": {
+                # AGV_JOINT.MB_LW_REV: 1.0,
+                # AGV_JOINT.MB_RW_REV: 1.0,
+                # AGV_JOINT.MB_PZ_PRI: 1.0,
+                # AGV_JOINT.PZ_PY_PRI: 1.0,
+                AGV_JOINT.PY_PX_PRI: 1.0,
+                AGV_JOINT.PX_PR_REV: 1.0,
+                # AGV_JOINT.PR_LR_REV: 1.0,
+                # AGV_JOINT.PR_RR_REV: 1.0,
+                # AGV_JOINT.LR_LPIN_PRI: 1.0,
+                AGV_JOINT.RR_RPIN_PRI: 1.0,
+            },
         },
     )
 
@@ -603,7 +654,7 @@ def pin_correct(env, right: bool = True) -> torch.Tensor:
     pin_pos_w = all_pin_positions(env, right)
     distance = euclidean_distance(hole_pos_w, pin_pos_w)
 
-    pin_pos = distance < 0.005
+    pin_pos = distance < 0.001 # 0.01 -> 0.005 -> 0.001
     # pin_vel = all_pin_velocities(env, right) < 0.001
     # pin_correct = torch.logical_and(pin_pos, pin_vel)
 
