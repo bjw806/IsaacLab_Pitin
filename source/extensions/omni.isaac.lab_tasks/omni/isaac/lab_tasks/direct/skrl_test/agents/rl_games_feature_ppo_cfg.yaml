@@ -4,9 +4,9 @@ params:
   # environment wrapper clipping
   env:
     # added to the wrapper
-    clip_observations: 5.0
+    clip_observations: 5.0 # 5.0, 100.0
     # can make custom wrapper?
-    clip_actions: 1.0
+    clip_actions: 1.0 # 1.0, 100,0
 
   algo:
     name: a2c_continuous
@@ -30,7 +30,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [1024, 512, 256, 128]
+      units: [512, 256, 128]
       activation: elu
       d2rl: True
 
@@ -55,15 +55,15 @@ params:
     value_bootstraop: True
     num_actors: -1  # configured from the script (based on num_envs)
     reward_shaper:
-      scale_value: 0.01
+      scale_value: 1.0
     normalize_advantage: True
     gamma: 0.99
     tau : 0.95
-    learning_rate: 5e-4
+    learning_rate: 1e-5
     lr_schedule: adaptive
     kl_threshold: 0.008
     score_to_win: 10000
-    max_epochs: 10000
+    max_epochs: 100000
     save_best_after: 100
     save_frequency: 100
     grad_norm: 1.0

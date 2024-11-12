@@ -111,7 +111,7 @@ class ActionsCfg:
             AGV_JOINT.PZ_PY_PRI,
             AGV_JOINT.PY_PX_PRI,
         ],
-        scale=20.0,
+        scale=100.0,
     )
 
     # joint_pxpr = mdp.JointEffortActionCfg(
@@ -137,7 +137,7 @@ class ActionsCfg:
             # AGV_JOINT.LR_LPIN_PRI,
             AGV_JOINT.RR_RPIN_PRI,
         ],
-        scale=30.0,
+        scale=100.0,
     )
 
 
@@ -163,8 +163,8 @@ class TheiaTinyObservationCfg:
         # actions = ObsTerm(func=mdp.last_action)
 
         # def __post_init__(self):
-        #     self.enable_corruption = True
-        #     self.concatenate_terms = True
+        #     self.enable_corruption = False
+        #     self.concatenate_terms = False
 
     policy: ObsGroup = TheiaTinyFeaturesCameraPolicyCfg()
 
@@ -365,7 +365,7 @@ class pin_correct_reward(TermBase, PinRewBase):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
         # pin_pos = all_pin_positions(env, right)
-        # pin_vel = all_pin_velocities(env, right)
+        pin_vel = all_pin_velocities(env, right)
 
         # pin_xy_pos = pin_pos[..., :2]
         # pin_z_pos = pin_pos[..., 2]
@@ -380,11 +380,18 @@ class pin_correct_reward(TermBase, PinRewBase):
         # pos_correct = torch.logical_and(xy_correct, z_correct)
 
         # reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
-        reward = pin_correct(env, right).int() * euclidean_distance(self.init_hole_pos, self.init_pin_pos)
+        reward = pin_correct(env, right).int() * torch.clamp(1 / pin_vel ** 2, max=1000, min=0.001)
         return reward
 
 
 class pin_wrong_reward(TermBase, PinRewBase):
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
+        super().__init__(cfg, env)
+        self.init_hole_pos = all_hole_positions(env, cfg.params["right"])
+
+    def reset(self, env_ids: torch.Tensor):
+        self.init_hole_pos[env_ids] = self.hole_positions(self.cfg.params["right"], env_ids)
+
     def __call__(
         self,
         env: ManagerBasedRLEnv,
@@ -392,8 +399,9 @@ class pin_wrong_reward(TermBase, PinRewBase):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
         penalty = pin_wrong(env, right)
-        reward = penalty.int()
-        return reward
+        pin_pos = all_pin_positions(env, right)
+        reward = penalty.int() * euclidean_distance(self.init_hole_pos, pin_pos)
+        return reward ** 2
 
 
 def randomize_color(env: ManagerBasedEnv, env_ids: torch.Tensor):
@@ -518,11 +526,11 @@ class RewardsCfg:
 
     r_pin_pos = RewTerm(func=pin_pos_reward, weight=1000, params={"right": True})
     # r_pin_vel = RewTerm(func=pin_vel_reward, weight=-500, params={"right": True})
-    r_pin_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2e-7, params={"asset_cfg": SceneEntityCfg("agv")})
+    # r_pin_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2e-7, params={"asset_cfg": SceneEntityCfg("agv")})
     # joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
     # r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
-    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-3, params={"asset_cfg": SceneEntityCfg("agv")})
-    # r_pin_correct = RewTerm(func=pin_correct_reward, weight=1e6, params={"right": True})
+    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-2e-4, params={"asset_cfg": SceneEntityCfg("agv")})
+    r_pin_correct = RewTerm(func=pin_correct_reward, weight=0.02, params={"right": True})
     # l_pin = RewTerm(func=l_pin_reward, weight=3.0)
     # r_pin_xy = RewTerm(func=r_pin_xy, weight=1.0)
     # r_pin_z = RewTerm(func=r_pin_z, weight=1.0)
@@ -536,7 +544,7 @@ class RewardsCfg:
     #     },
     # )
 
-    r_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-100, params={"right": True})
+    r_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-5000, params={"right": True})
 
     niro_undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
@@ -596,10 +604,10 @@ def pin_correct(env, right: bool = True) -> torch.Tensor:
     distance = euclidean_distance(hole_pos_w, pin_pos_w)
 
     pin_pos = distance < 0.005
-    pin_vel = all_pin_velocities(env, right) < 0.001
-    pin_correct = torch.logical_and(pin_pos, pin_vel)
+    # pin_vel = all_pin_velocities(env, right) < 0.001
+    # pin_correct = torch.logical_and(pin_pos, pin_vel)
 
-    return pin_correct.squeeze(0)
+    return pin_pos.squeeze(0)
 
 
 def pin_wrong(env, right: bool = True) -> torch.Tensor:
@@ -678,3 +686,11 @@ class AGVEnvCfg(ManagerBasedRLEnvCfg):
         # simulation settings
         self.sim.dt = 1 / 120
         self.sim.render_interval = self.decimation
+        self.sim.render.enable_translucency = True
+        self.sim.render.enable_reflections = True
+        # self.sim.render.antialiasing_mode = "DLAA"
+        self.sim.render.enable_dlssg = True
+        self.sim.render.dlss_mode = 3
+        self.sim.render.enable_direct_lighting = True
+        self.sim.render.enable_shadows = True
+        self.sim.render.enable_ambient_occlusion = True
