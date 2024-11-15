@@ -318,13 +318,13 @@ class pin_pos_reward(TermBase, PinRewBase):
         # print(f"pin_acc_w: {pin_acc_w}")
         # print(f"reward: {reward}")
         # reward = (
-        #     reward 
-        #     * torch.clamp(1/pin_vel_w, min=1, max=10) 
+        #     reward
+        #     * torch.clamp(1/pin_vel_w, min=1, max=10)
         #     * torch.clamp(1/pin_acc_w, min=1, max=10)
         # )
-        
+
         return reward
-    
+
     def calculate_angles(self, a, b):
         z_axis = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32)
         u = a - b
@@ -335,8 +335,34 @@ class pin_pos_reward(TermBase, PinRewBase):
         cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
         theta_radian = torch.acos(cos_theta)
         angles_degree = torch.rad2deg(theta_radian)
-        
+
         return angles_degree
+
+
+class pin_pos_xy_reward(pin_pos_reward):
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    ) -> torch.Tensor:
+        pin_pos_w = all_pin_positions(env, right)
+        init_distances = euclidean_distance(self.init_pin_pos[:, :2], self.init_hole_pos[:, :2])
+        curr_distances = euclidean_distance(pin_pos_w[:, :2], self.init_hole_pos[:, :2])
+        return (init_distances - curr_distances) ** 2
+
+
+class pin_pos_z_reward(pin_pos_reward):
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    ) -> torch.Tensor:
+        pin_pos_w = all_pin_positions(env, right)
+        init_distances = torch.abs(self.init_pin_pos[:, 2] - self.init_hole_pos[:, 2])
+        curr_distances = pin_pos_w[:, 2] - self.init_hole_pos[:, 2]
+        return (init_distances - curr_distances) ** 2
 
 
 class pin_vel_reward(TermBase, PinRewBase):
@@ -348,8 +374,66 @@ class pin_vel_reward(TermBase, PinRewBase):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
         pin_vel_w = all_pin_velocities(env, right)
-        reward = torch.arctan(pin_vel_w - target_velocity)
-        return reward
+        return pin_vel_w **2
+
+
+# class pin_pos_vel_reward(pin_pos_reward):
+#     def __call__(
+#         self,
+#         env: ManagerBasedRLEnv,
+#         right: bool = True,
+#         max_velocity: float = 1e-4,
+#     ) -> torch.Tensor:
+#         # pin_pos = all_pin_positions(env, right)
+#         # hole_pos = all_hole_positions(env, right)
+#         curr_velocity = self.pin_velocities(env, right)
+
+#         # init_distances = euclidean_distance(self.init_pin_pos[:, :2], self.init_hole_pos[:, :2])
+#         # curr_distances = euclidean_distance(pin_pos[:, :2], hole_pos[:, :2])
+#         # ideal_velocity = max_velocity * torch.sin((torch.pi * curr_distances) / init_distances)
+
+#         # return (curr_velocity - ideal_velocity) ** 2
+#         return curr_velocity**2
+
+#     def pin_velocities(self, env, right: bool = True):
+#         pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[
+#             0
+#         ]
+#         pin_vel_w = env.scene.articulations["agv"].data.body_vel_w[:, pin_idx, :]
+
+#         pin_lv = pin_vel_w.squeeze(1)[..., :2]
+#         pin_v_norm = torch.norm(pin_lv, dim=-1)
+#         return pin_v_norm + 1e-8
+
+
+# class pin_pos_vel_reward2(pin_pos_reward):
+#     def __call__(
+#         self,
+#         env: ManagerBasedRLEnv,
+#         right: bool = True,
+#         max_velocity: float = 1e-4,
+#     ) -> torch.Tensor:
+#         pin_pos = all_pin_positions(env, right)
+#         # hole_pos = all_hole_positions(env, right)
+#         curr_velocity = self.pin_velocities(env, right)
+
+#         # init_distances = torch.abs(self.init_pin_pos[:, 2] - self.init_hole_pos[:, 2])
+#         # curr_distances = torch.abs(pin_pos[:, 2] - hole_pos[:, 2])
+#         # ideal_velocity = max_velocity * torch.sin((torch.pi * curr_distances) / init_distances)
+
+#         # return (curr_velocity - ideal_velocity) ** 2
+
+#         return torch.where(pin_pos[:, 2] > self.init_pin_pos[:, 2], curr_velocity**2, (curr_velocity**2)*2)
+
+#     def pin_velocities(self, env, right: bool = True):
+#         pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[
+#             0
+#         ]
+#         pin_vel_w = env.scene.articulations["agv"].data.body_vel_w[:, pin_idx, :]
+
+#         pin_lv = pin_vel_w.squeeze(1)[..., 2]
+#         pin_v_norm = torch.norm(pin_lv, dim=-1)
+#         return pin_v_norm + 1e-8
 
 
 class pin_acc_reward(TermBase, PinRewBase):
@@ -639,9 +723,13 @@ class RewardsCfg:
     # alive = RewTerm(func=mdp.is_alive, weight=1)
     # terminating = RewTerm(func=mdp.is_terminated, weight=-1000)
 
-    r_pin_pos = RewTerm(func=pin_pos_reward, weight=1000, params={"right": True})
+    # r_pin_pos = RewTerm(func=pin_pos_reward, weight=1000, params={"right": True})
+    r_pin_xy_pos = RewTerm(func=pin_pos_xy_reward, weight=1000, params={"right": True})
+    r_pin_z_pos = RewTerm(func=pin_pos_z_reward, weight=50, params={"right": True})
     r_pin_vel = RewTerm(func=pin_vel_reward, weight=-100, params={"right": True})
-    r_pin_acc = RewTerm(func=pin_acc_reward, weight=-0.02, params={"right": True})
+    # r_pin_xy_vel = RewTerm(func=pin_pos_vel_reward, weight=-5e2, params={"right": True})
+    # r_pin_z_vel = RewTerm(func=pin_pos_vel_reward2, weight=-5e6, params={"right": True})
+    # r_pin_acc = RewTerm(func=pin_acc_reward, weight=-0.02, params={"right": True})
     # r_pin_joint_acc = RewTerm(
     #     func=mdp.joint_acc_l2,
     #     weight=-1e-4,
@@ -672,8 +760,8 @@ class RewardsCfg:
     #             joint_names=[AGV_JOINT.RR_RPIN_PRI],
     #         )
     #     },
-    # )    
-    
+    # )
+
     # xy_joint_acc = RewTerm(
     #     func=mdp.joint_acc_l2,
     #     weight=-0.01,
