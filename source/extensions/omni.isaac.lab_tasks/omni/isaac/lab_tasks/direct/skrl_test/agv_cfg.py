@@ -25,7 +25,7 @@ class AGV_JOINT:
 AGV_CFG: ArticulationCfg = ArticulationCfg(
     # prim_path="{ENV_REGEX_NS}/AGV",
     spawn=sim_utils.UsdFileCfg(
-        usd_path="./robot/usd/agv/agv_fixed_pin.usd",
+        usd_path="./robot/usd/agv/agv_self_collision.usd",
         # rigid_props=sim_utils.RigidBodyPropertiesCfg(
         #     rigid_body_enabled=True,
         #     max_linear_velocity=1000.0,
@@ -62,7 +62,7 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
             joint_names_expr=[AGV_JOINT.MB_LW_REV, AGV_JOINT.MB_RW_REV],
             effort_limit=10000.0,
             velocity_limit=10000.0,
-            stiffness=0.0,
+            stiffness=1000.0,
             damping=0.0,
         ),
         "xyz_actuator": ImplicitActuatorCfg(
@@ -74,20 +74,20 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
             effort_limit=100000.0,
             velocity_limit=100.0,
             stiffness=1000.0,
-            damping=0.0,
+            damping=100.0,
         ),
         "px_pr_rev_actuator": ImplicitActuatorCfg(
             joint_names_expr=[AGV_JOINT.PX_PR_REV],
             effort_limit=10000.0,
             velocity_limit=10000.0,
-            stiffness=0.0,
+            stiffness=10000000.0,
             damping=0.0,
         ),
         "pin_rev_actuator": ImplicitActuatorCfg(
             joint_names_expr=[AGV_JOINT.PR_LR_REV, AGV_JOINT.PR_RR_REV],
             effort_limit=10000.0,
             velocity_limit=10000.0,
-            stiffness=0.0,
+            stiffness=1000.0,
             damping=0.0,
         ),
         "pin_pri_actuator": ImplicitActuatorCfg(
@@ -98,7 +98,7 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
             effort_limit=100000.0,
             velocity_limit=100.0,
             stiffness=1000.0,
-            damping=0.0,
+            damping=100.0,
         ),
     },
 )
