@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # import the skrl components to build the RL system
-from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
+from ppo_rnd import PPO_RND, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -12,14 +12,25 @@ from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 from skrl.utils.spaces.torch import unflatten_tensorized_space
 from torch.cuda.amp import autocast
+from lr_schedulers import CosineAnnealingWarmUpRestarts
 
 # seed for reproducibility
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
 # torch.autograd.set_detect_anomaly(True)
 
+
 class Shared(GaussianMixin, DeterministicMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions=False,
-                 clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum"):
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        device,
+        clip_actions=False,
+        clip_log_std=True,
+        min_log_std=-20,
+        max_log_std=2,
+        reduction="sum",
+    ):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
@@ -43,7 +54,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.BatchNorm1d(128),
             nn.ELU(),
             nn.Dropout(0.2),
-
             nn.Linear(128, 32),
             nn.BatchNorm1d(32),
             nn.ELU(),
@@ -77,12 +87,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape)
         features = self.net_features(image)
-        # taken_actions = inputs["taken_actions"]
         i = torch.cat([features, states["value"]], dim=1)
 
         rnd_target_output = self.rnd_target(features.detach())
         rnd_predictor_output = self.rnd_predictor(features)
-        rnd_bonus = F.mse_loss(rnd_predictor_output, rnd_target_output, reduction='none').mean(dim=1, keepdim=True)
+        rnd_bonus = F.mse_loss(rnd_predictor_output, rnd_target_output, reduction="none").mean(dim=1, keepdim=True) ** 2
         rnd_loss = F.mse_loss(rnd_predictor_output, rnd_target_output)
 
         if role == "policy":
@@ -90,8 +99,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             action = self.mean_layer(self._shared_output)
             return action, self.log_std_parameter, {"rnd_bonus": rnd_bonus, "rnd_loss": rnd_loss}
         elif role == "value":
-            # i = self.net_mlp(states["critic"])
-            # i = torch.cat([image, states["critic"], taken_actions], dim=1)
             shared_output = self.net_fc(i) if self._shared_output is None else self._shared_output
             self._shared_output = None
             value = self.value_layer(shared_output)
@@ -130,30 +137,32 @@ cfg["rollouts"] = memory_size
 cfg["learning_epochs"] = 64
 cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
-cfg["lambda"] = 0.95
-cfg["policy_learning_rate"] = 1e-5
-cfg["value_learning_rate"] = 1e-5
-cfg["grad_norm_clip"] = 1.0
-cfg["ratio_clip"] = 0.2
-cfg["value_clip"] = 0.2
-cfg["clip_predicted_values"] = False
-cfg["entropy_loss_scale"] = 0.0
-cfg["value_loss_scale"] = 0.5
-cfg["kl_threshold"] = 0
-cfg["optimizer"] = torch.optim.AdamW(models["policy"].parameters(), lr=1e-5)
+# cfg["lambda"] = 0.95
+cfg["learning_rate"] = 0
+# cfg["grad_norm_clip"] = 0.5
+# cfg["ratio_clip"] = 0.2
+# cfg["value_clip"] = 0.2
+# cfg["clip_predicted_values"] = False
+# cfg["entropy_loss_scale"] = 0.5
+# cfg["value_loss_scale"] = 1.0
+# cfg["mixed_precision"] = False
+# cfg["optimizer"] = torch.optim.Adam(models["policy"].parameters(), lr=0)
 cfg["learning_starts"] = 0
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.OneCycleLR
+cfg["learning_rate_scheduler"] = CosineAnnealingWarmUpRestarts
 cfg["learning_rate_scheduler_kwargs"] = {
-    "max_lr": 1e-4, 
-    "total_steps": 1000000,
+    "T_0": 1024,
+    "T_mult": 1,
+    "T_up": 64,
+    "eta_max": 1e-3,
+    "gamma": 0.5,
 }
 
 # logging to TensorBoard and write checkpoints (in timesteps)
-cfg["experiment"]["write_interval"] = 1024
+cfg["experiment"]["write_interval"] = 100
 cfg["experiment"]["checkpoint_interval"] = 100000
 cfg["experiment"]["directory"] = "runs/torch/AGV"
 
-agent = PPO(
+agent = PPO_RND(
     models=models,
     memory=memory,
     cfg=cfg,

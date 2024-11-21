@@ -48,16 +48,7 @@ class Policy(MultivariateGaussianMixin, Model):
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
+            nn.Linear(self.hidden_size, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.Linear(32, self.num_actions),
@@ -161,16 +152,7 @@ class Value(DeterministicMixin, Model):
         )  # batch_first -> (batch, sequence, features)
 
         self.net = nn.Sequential(
-            nn.Linear(self.hidden_size, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
+            nn.Linear(self.hidden_size, 32),
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.Linear(32, 1),
@@ -244,10 +226,10 @@ class Value(DeterministicMixin, Model):
         return self.net(rnn_output), {"rnn": [rnn_states[0], rnn_states[1]]}
 
 
-env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
+env = load_isaaclab_env(task_name="Isaac-AGV-Managed")
 env = wrap_env(env, wrapper="isaaclab-single-agent")
 device = env.device
-replay_buffer_size = 1024 * 4 * env.num_envs
+replay_buffer_size = 256 * 1 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 
@@ -257,7 +239,7 @@ model_cfg = dict(
     device=env.device,
     num_envs=env.num_envs,
     num_layers=2,
-    hidden_size=512,
+    hidden_size=256,
     sequence_length=256,
 )
 models = {}
@@ -276,7 +258,7 @@ models["value"] = Value(
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = memory_size
-cfg["learning_epochs"] = 64
+cfg["learning_epochs"] = 16
 cfg["mini_batches"] = 4
 cfg["discount_factor"] = 0.99
 # cfg["lambda"] = 0.95
@@ -295,8 +277,8 @@ cfg["learning_rate_scheduler_kwargs"] = {
     "T_0": 16 * cfg["learning_epochs"],  # 첫 주기의 길이
     "T_mult": 2,  # 매 주기마다 주기의 길이를 두배로 늘림
     "T_up": cfg["learning_epochs"],  # warm-up 주기
-    "eta_max": 1e-4,  # 최대 학습률
-    "gamma": 0.8,  # 학습률 감소율
+    "eta_max": 1e-3,  # 최대 학습률
+    "gamma": 0.75,  # 학습률 감소율
 }
 
 cfg["experiment"]["write_interval"] = 1024

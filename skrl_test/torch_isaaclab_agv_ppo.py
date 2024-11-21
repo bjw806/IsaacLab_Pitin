@@ -34,36 +34,23 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
 
         self.net_features = nn.Sequential(
-            nn.Conv1d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Conv1d(512, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Conv1d(256, 256, kernel_size=3, stride=1),
+            nn.Linear(192, 16),
             nn.ReLU(),
             nn.Flatten(),
         )
 
         self.net_values = nn.Sequential(
-            nn.Linear(30, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(23, 32),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(64, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(32, 16),
+            nn.BatchNorm1d(16),
             nn.ReLU(),
         )
 
         self.net_fc = nn.Sequential(
-            nn.Linear(512 * 2, 512),
+            nn.Linear(324*16 + 16, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -96,8 +83,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         states = unflatten_tensorized_space(self.observation_space, inputs["states"])
         image = states["image"].view(-1, *self.observation_space["image"].shape)
         features = self.net_features(image)
-        # taken_actions = inputs["taken_actions"]
-        values = self.net_values(states["value"])
+        joint = torch.cat([states["joint_pos"], states["joint_vel"], states["actions"]], dim=1)
+        values = self.net_values(joint)
         i = torch.cat([features, values], dim=1)
 
         if role == "policy":
@@ -114,14 +101,14 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
 
 # load and wrap the environment
-env = load_isaaclab_env(task_name="Isaac-AGV-Direct")
+env = load_isaaclab_env(task_name="Isaac-AGV-Managed")
 env = wrap_env(env, wrapper="isaaclab-single-agent")
 
 device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-replay_buffer_size = 1024 * 1 * env.num_envs
+replay_buffer_size = 512 * 1 * env.num_envs
 memory_size = int(replay_buffer_size / env.num_envs)
 memory = RandomMemory(memory_size=memory_size, num_envs=env.num_envs, device=device)
 # memory.load("skrl_test/memory/24-10-31_13-05-25-860930_memory_0x77a9a9ff3730.csv")
