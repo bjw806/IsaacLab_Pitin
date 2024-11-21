@@ -73,8 +73,8 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
             ],
             effort_limit=100000.0,
             velocity_limit=100.0,
-            stiffness=1000.0,
-            damping=100.0,
+            stiffness=100.0,
+            damping=1000.0,
         ),
         "px_pr_rev_actuator": ImplicitActuatorCfg(
             joint_names_expr=[AGV_JOINT.PX_PR_REV],
@@ -98,7 +98,7 @@ AGV_CFG: ArticulationCfg = ArticulationCfg(
             effort_limit=100000.0,
             velocity_limit=100.0,
             stiffness=1000.0,
-            damping=100.0,
+            damping=1000.0,
         ),
     },
 )
