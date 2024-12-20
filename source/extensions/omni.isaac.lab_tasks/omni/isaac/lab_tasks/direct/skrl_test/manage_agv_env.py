@@ -49,12 +49,28 @@ class AGVSceneCfg(InteractiveSceneCfg):
     niro = RigidObjectCfg(
         prim_path=f"{ENV_REGEX_NS}/Niro",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="./robot/usd/niro/niro_fixed.usd",
+            usd_path="./robot/usd/niro/niro_no_joint.usd",
             activate_contact_sensors=True,
+            # mass_props=sim_utils.MassPropertiesCfg(mass=1000.0),
+            # rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+            # articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False)
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(-0.5, 0.0, 1.05),
             # rot=(0.70711, 0.0, 0.0, 0.70711),
+        ),
+    )
+
+    table = RigidObjectCfg(
+        prim_path=f"{ENV_REGEX_NS}/Table",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="./robot/usd/table.usd",
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                articulation_enabled=False
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(0, -0.7, 1),
         ),
     )
 
@@ -125,7 +141,7 @@ class ActionsCfg:
             AGV_JOINT.PZ_PY_PRI,
             AGV_JOINT.PY_PX_PRI,
         ],
-        scale=0.5,
+        scale=1,
     )
 
     # joint_pxpr = mdp.JointEffortActionCfg(
@@ -150,7 +166,7 @@ class ActionsCfg:
             AGV_JOINT.LR_LPIN_PRI,
             AGV_JOINT.RR_RPIN_PRI,
         ],
-        scale=0.5,
+        scale=1,
     )
 
 
@@ -202,7 +218,9 @@ def reset_scene_to_default(env: ManagerBasedEnv, env_ids: torch.Tensor):
         default_joint_pos = articulation_asset.data.default_joint_pos[env_ids].clone()
         default_joint_vel = articulation_asset.data.default_joint_vel[env_ids].clone()
         # set into the physics simulation
-        articulation_asset.write_joint_state_to_sim(default_joint_pos, default_joint_vel, env_ids=env_ids)
+        articulation_asset.write_joint_state_to_sim(
+            default_joint_pos, default_joint_vel, env_ids=env_ids
+        )
 
 
 def randomize_joints_by_offset(
@@ -213,7 +231,9 @@ def randomize_joints_by_offset(
 ):
     asset: Articulation = env.scene[asset_cfg.name]
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
-    joint_pos += math_utils.sample_uniform(*position_range, joint_pos.shape, joint_pos.device)
+    joint_pos += math_utils.sample_uniform(
+        *position_range, joint_pos.shape, joint_pos.device
+    )
     joint_pos_limits = asset.data.soft_joint_pos_limits[env_ids]
     joint_pos = joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
     asset.write_joint_state_to_sim(joint_pos, 0, env_ids=env_ids)
@@ -236,14 +256,18 @@ def randomize_object_position(
 
     # Random offsets for X and Y coordinates
     xy_random_offsets = torch.tensor(
-        np.random.uniform(xy_low, xy_high, size=(default_root_state.shape[0], 2)),  # For X and Y only
+        np.random.uniform(
+            xy_low, xy_high, size=(default_root_state.shape[0], 2)
+        ),  # For X and Y only
         dtype=default_root_state.dtype,
         device=default_root_state.device,
     )
 
     # Random offsets for Z coordinate
     z_random_offsets = torch.tensor(
-        np.random.uniform(z_low, z_high, size=(default_root_state.shape[0], 1)),  # For Z only
+        np.random.uniform(
+            z_low, z_high, size=(default_root_state.shape[0], 1)
+        ),  # For Z only
         dtype=default_root_state.dtype,
         device=default_root_state.device,
     )
@@ -256,27 +280,124 @@ def randomize_object_position(
     rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
 
+def randomize_arti_position(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    xy_position_range: tuple[float, float],
+    z_position_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+):
+    articulation = env.scene.articulations[asset_cfg.name]
+    # obtain default and deal with the offset for env origins
+    default_root_state = articulation.data.default_root_state[env_ids].clone()
+    default_root_state[:, 0:3] += env.scene.env_origins[env_ids]
+
+    xy_low, xy_high = xy_position_range
+    z_low, z_high = z_position_range
+
+    # Random offsets for X and Y coordinates
+    xy_random_offsets = torch.tensor(
+        np.random.uniform(
+            xy_low, xy_high, size=(default_root_state.shape[0], 2)
+        ),  # For X and Y only
+        dtype=default_root_state.dtype,
+        device=default_root_state.device,
+    )
+
+    # Random offsets for Z coordinate
+    z_random_offsets = torch.tensor(
+        np.random.uniform(
+            z_low, z_high, size=(default_root_state.shape[0], 1)
+        ),  # For Z only
+        dtype=default_root_state.dtype,
+        device=default_root_state.device,
+    )
+
+    # Apply random offsets to the X, Y, and Z coordinates
+    default_root_state[:, 0:2] += xy_random_offsets  # Apply to X and Y coordinates
+    default_root_state[:, 2:3] += z_random_offsets  # Apply to Z coordinate
+
+    # set into the physics simulatio
+    articulation.write_root_state_to_sim(default_root_state, env_ids=env_ids)
+
+
 class PinRewBase:
     def pin_positions(self, right: bool = True, env_ids=None):
-        pin_idx = self._env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
-        pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[env_ids, pin_idx, :]
-        pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.45], device="cuda:0")  # 0.479
+        pin_idx = self._env.scene.articulations["agv"].find_bodies(
+            "rpin_1" if right else "lpin_1"
+        )[0]
+        pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[
+            env_ids, pin_idx, :
+        ]
+        pin_rel = torch.tensor(
+            [0, 0.02 if right else -0.02, 0.45], device="cuda:0"
+        )  # 0.479
         pin_pos_w = torch.add(pin_root_pos, pin_rel)
         return pin_pos_w.squeeze(1)
 
     def hole_positions(self, right: bool = True, env_ids=None):
         niro: RigidObject = self._env.scene.rigid_objects["niro"]
         niro_pos = niro.data.root_pos_w[env_ids]
-        hole_rel = torch.tensor([0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0")
+        hole_rel = torch.tensor(
+            [0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0"
+        )
         hole_pos_w = torch.add(niro_pos, hole_rel)
         return hole_pos_w.squeeze(1)
 
     def pin_velocities(self, right: bool = True, env_ids=None):
-        pin_idx = self._env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
-        pin_vel_w = self._env.scene.articulations["agv"].data.body_vel_w[env_ids, pin_idx, :]
+        pin_idx = self._env.scene.articulations["agv"].find_bodies(
+            "rpin_1" if right else "lpin_1"
+        )[0]
+        pin_vel_w = self._env.scene.articulations["agv"].data.body_vel_w[
+            env_ids, pin_idx, :
+        ]
         pin_lv = pin_vel_w.squeeze(1)[..., :3]
         pin_v_norm = torch.norm(pin_lv, dim=-1)
         return pin_v_norm
+
+
+class NiroRewBase:
+    def niro_velocities(self, env_ids=None):
+        niro = self._env.scene.rigid_objects["niro"]
+        niro_vel_w = niro.data.body_vel_w
+        print(niro_vel_w)
+        niro_lv = niro_vel_w.squeeze(1)[..., :3]
+        niro_vel_norm = torch.norm(niro_lv, dim=-1)
+        return niro_vel_norm
+
+    def niro_accelerations(self, env_ids=None):
+        niro = self._env.scene.rigid_objects["niro"]
+        niro_acc_w = niro.data.body_acc_w
+        print(niro_acc_w)
+        niro_lv = niro_acc_w.squeeze(1)[..., :3]
+        niro_acc_norm = torch.norm(niro_lv, dim=-1)
+        return niro_acc_norm
+
+
+class niro_reward(TermBase, NiroRewBase):
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
+        super().__init__(cfg, env)
+        self.init_niro_vel = all_niro_velocities(env)
+        self.init_niro_acc = all_niro_accelerations(env)
+
+    def reset(self, env_ids: torch.Tensor):
+        niro_vel_w = self.niro_velocities(env_ids)
+        niro_acc_w = self.niro_accelerations(env_ids)
+
+        self.init_niro_vel[env_ids] = niro_vel_w
+        self.init_niro_acc[env_ids] = niro_acc_w
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        right: bool = True,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("niro"),
+    ) -> torch.Tensor:
+        niro_vel_w = all_niro_velocities(env)
+        niro_acc_w = all_niro_accelerations(env)
+
+        reward = niro_vel_w**2 + niro_acc_w**2
+        return reward
 
 
 class pin_pos_reward(TermBase, PinRewBase):
@@ -353,7 +474,9 @@ class pin_pos_xy_reward(pin_pos_reward):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
         pin_pos_w = all_pin_positions(env, right)
-        init_distances = euclidean_distance(self.init_pin_pos[:, :2], self.init_hole_pos[:, :2])
+        init_distances = euclidean_distance(
+            self.init_pin_pos[:, :2], self.init_hole_pos[:, :2]
+        )
         curr_distances = euclidean_distance(pin_pos_w[:, :2], self.init_hole_pos[:, :2])
         return (init_distances - curr_distances) ** 2
 
@@ -426,7 +549,7 @@ class decalcomanie_reward(TermBase, PinRewBase):
                 # AGV_JOINT.PR_LR_REV,
                 AGV_JOINT.LR_LPIN_PRI,
             ]
-        )[0] # [6, 7, 8, 9]
+        )[0]  # [6, 7, 8, 9]
         position = self._env.scene.articulations["agv"].data.joint_pos[:, joint_idx]
         L = position[:, 0]
         R = position[:, 1]
@@ -458,7 +581,9 @@ class pin_direction_penalty(TermBase, PinRewBase):
         prev_z = self.prev_pin_pos[..., 2]
         direction = torch.where(curr_z > prev_z, 1, -1)
 
-        self.counter = torch.where(direction == self.prev_direction, self.counter + 1, 0)
+        self.counter = torch.where(
+            direction == self.prev_direction, self.counter + 1, 0
+        )
         self.prev_direction = direction
 
         return self.counter**2
@@ -470,11 +595,20 @@ class draw_lines(TermBase):
         env: ManagerBasedRLEnv,
         asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
     ) -> torch.Tensor:
-        pin_list = torch.vstack((all_pin_positions(env, True), all_pin_positions(env, False))).tolist()
-        hole_list = torch.vstack((all_hole_positions(env, True), all_hole_positions(env, False))).tolist()
+        pin_list = torch.vstack(
+            (all_pin_positions(env, True), all_pin_positions(env, False))
+        ).tolist()
+        hole_list = torch.vstack(
+            (all_hole_positions(env, True), all_hole_positions(env, False))
+        ).tolist()
         draw = _debug_draw.acquire_debug_draw_interface()
         draw.clear_lines()
-        draw.draw_lines(pin_list, hole_list, [(1, 1, 1, 1)] * self.num_envs * 2, [5] * self.num_envs * 2)
+        draw.draw_lines(
+            pin_list,
+            hole_list,
+            [(1, 1, 1, 1)] * self.num_envs * 2,
+            [5] * self.num_envs * 2,
+        )
         return torch.zeros(self.num_envs, device="cuda:0").bool()
 
 
@@ -485,8 +619,12 @@ class pin_correct_reward(TermBase, PinRewBase):
         self.init_pin_pos = all_pin_positions(env, cfg.params["right"])
 
     def reset(self, env_ids: torch.Tensor):
-        self.init_hole_pos[env_ids] = self.hole_positions(self.cfg.params["right"], env_ids)
-        self.init_pin_pos[env_ids] = self.pin_positions(self.cfg.params["right"], env_ids)
+        self.init_hole_pos[env_ids] = self.hole_positions(
+            self.cfg.params["right"], env_ids
+        )
+        self.init_pin_pos[env_ids] = self.pin_positions(
+            self.cfg.params["right"], env_ids
+        )
 
     def __call__(
         self,
@@ -510,7 +648,9 @@ class pin_correct_reward(TermBase, PinRewBase):
         # pos_correct = torch.logical_and(xy_correct, z_correct)
 
         # reward = pos_correct.int() * torch.clamp(1 / pin_vel, max=10) * torch.clamp(1 / distance, max=10)
-        reward = pin_correct(env, right).int() * torch.clamp(1 / pin_vel, max=10, min=0.1)
+        reward = pin_correct(env, right).int() * torch.clamp(
+            1 / pin_vel, max=10, min=0.1
+        )
         return reward
 
 
@@ -520,7 +660,9 @@ class pin_wrong_reward(TermBase, PinRewBase):
         self.init_hole_pos = all_hole_positions(env, cfg.params["right"])
 
     def reset(self, env_ids: torch.Tensor):
-        self.init_hole_pos[env_ids] = self.hole_positions(self.cfg.params["right"], env_ids)
+        self.init_hole_pos[env_ids] = self.hole_positions(
+            self.cfg.params["right"], env_ids
+        )
 
     def __call__(
         self,
@@ -610,26 +752,31 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("niro"),
             "xy_position_range": (-0.05, 0.05),
-            "z_position_range": (-0.03, 0.03),
+            "z_position_range": (0, 0),
         },
     )
 
+    # reset_table_position
+
 
 def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
-    pin_idx = env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
+    pin_idx = env.scene.articulations["agv"].find_bodies(
+        "rpin_1" if right else "lpin_1"
+    )[0]
     pin_root_pos = env.scene.articulations["agv"].data.body_pos_w[:, pin_idx, :]
-    pin_rel = torch.tensor([0, 0.02 if right else -0.02, 0.45], device="cuda:0")  # 0.479
+    pin_rel = torch.tensor(
+        [0, 0.02 if right else -0.02, 0.45], device="cuda:0"
+    )  # 0.479
 
     angle_deg = 40
     angle_rad = (angle_deg if right else -angle_deg) * (np.pi / 180.0)
     cos_theta = torch.cos(torch.tensor(angle_rad, device="cuda:0"))
     sin_theta = torch.sin(torch.tensor(angle_rad, device="cuda:0"))
 
-    rotation_matrix = torch.tensor([
-        [cos_theta, -sin_theta, 0],
-        [sin_theta, cos_theta, 0],
-        [0, 0, 1]
-    ], device="cuda:0")
+    rotation_matrix = torch.tensor(
+        [[cos_theta, -sin_theta, 0], [sin_theta, cos_theta, 0], [0, 0, 1]],
+        device="cuda:0",
+    )
 
     pin_rel_rotated = torch.matmul(rotation_matrix, pin_rel)
 
@@ -640,13 +787,29 @@ def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
 def all_hole_positions(env: ManagerBasedRLEnv, right: bool = True):
     niro: RigidObject = env.scene.rigid_objects["niro"]
     niro_pos = niro.data.root_pos_w
-    hole_rel = torch.tensor([0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0")
+    hole_rel = torch.tensor(
+        [0.455, 0.693 if right else -0.693, 0.0654], device="cuda:0"
+    )
     hole_pos_w = torch.add(niro_pos, hole_rel)
     return hole_pos_w.squeeze(1)
 
 
+def all_niro_velocities(env: ManagerBasedRLEnv):
+    niro: RigidObject = env.scene.rigid_objects["niro"]
+    niro_vel_w = niro.data.body_vel_w
+    return niro_vel_w.squeeze(1)
+
+
+def all_niro_accelerations(env: ManagerBasedRLEnv):
+    niro: RigidObject = env.scene.rigid_objects["niro"]
+    niro_acc_w = niro.data.body_acc_w
+    return niro_acc_w.squeeze(1)
+
+
 def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
-    pin_idx = env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
+    pin_idx = env.scene.articulations["agv"].find_bodies(
+        "rpin_1" if right else "lpin_1"
+    )[0]
     # pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
     pin_vel_w = env.scene.articulations["agv"].data.body_vel_w[:, pin_idx, :]
 
@@ -656,7 +819,9 @@ def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
 
 
 def all_pin_accelerations(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
-    pin_idx = env.scene.articulations["agv"].find_bodies("rpin_1" if right else "lpin_1")[0]
+    pin_idx = env.scene.articulations["agv"].find_bodies(
+        "rpin_1" if right else "lpin_1"
+    )[0]
     # pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
     pin_vel_w = env.scene.articulations["agv"].data.body_acc_w[:, pin_idx, :]
 
@@ -686,7 +851,11 @@ class power_consumption(ManagerTermBase):
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
 
     def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg, right: bool = True
+        self,
+        env: ManagerBasedRLEnv,
+        gear_ratio: dict[str, float],
+        asset_cfg: SceneEntityCfg,
+        right: bool = True,
     ) -> torch.Tensor:
         asset: Articulation = env.scene[asset_cfg.name]
         joints = [
@@ -697,7 +866,11 @@ class power_consumption(ManagerTermBase):
         idx = asset.find_joints(joints)[0]
         # return power = torque * velocity (here actions: joint torques)
         return torch.sum(
-            torch.abs(env.action_manager.action * asset.data.joint_vel[:, idx] * self.gear_ratio_scaled[:, idx]),
+            torch.abs(
+                env.action_manager.action
+                * asset.data.joint_vel[:, idx]
+                * self.gear_ratio_scaled[:, idx]
+            ),
             dim=-1,
         )
 
@@ -715,10 +888,10 @@ class RewardsCfg:
     # l_pin_xy_pos = RewTerm(func=pin_pos_xy_reward, weight=-1000, params={"right": False})
     # r_pin_z_pos = RewTerm(func=pin_pos_z_reward, weight=-50, params={"right": True})
     # l_pin_z_pos = RewTerm(func=pin_pos_z_reward, weight=-50, params={"right": False})
-    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-1, params={"right": True})
-    l_pin_vel = RewTerm(func=pin_vel_reward, weight=-1, params={"right": False})
-    r_pin_acc = RewTerm(func=pin_acc_reward, weight=-1e-4, params={"right": True})
-    l_pin_acc = RewTerm(func=pin_acc_reward, weight=-1e-4, params={"right": False})
+    r_pin_vel = RewTerm(func=pin_vel_reward, weight=-10, params={"right": True})
+    l_pin_vel = RewTerm(func=pin_vel_reward, weight=-10, params={"right": False})
+    r_pin_acc = RewTerm(func=pin_acc_reward, weight=-1e-2, params={"right": True})
+    l_pin_acc = RewTerm(func=pin_acc_reward, weight=-1e-2, params={"right": False})
     # r_pin_joint_acc = RewTerm(
     #     func=mdp.joint_acc_l2,
     #     weight=-1e-4,
@@ -742,7 +915,7 @@ class RewardsCfg:
     # r_pin_torque = RewTerm(func=pin_torque_reward, weight=-1e-6, params={"right": True})
     r_pin_joint_torque = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-2e-5,
+        weight=-2e-3,
         params={
             "asset_cfg": SceneEntityCfg(
                 "agv",
@@ -752,7 +925,7 @@ class RewardsCfg:
     )
     l_pin_joint_torque = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-2e-5,
+        weight=-2e-3,
         params={
             "asset_cfg": SceneEntityCfg(
                 "agv",
@@ -783,7 +956,7 @@ class RewardsCfg:
     # )
     xy_joint_torque = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-1e-5,
+        weight=-1e-3,
         params={
             "asset_cfg": SceneEntityCfg(
                 "agv",
@@ -803,12 +976,12 @@ class RewardsCfg:
     #     },
     # )
 
-    r_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-3e3, params={"right": True})
-    l_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-3e3, params={"right": False})
+    # r_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-3e3, params={"right": True})
+    # l_pin_wrong = RewTerm(func=pin_wrong_reward, weight=-3e3, params={"right": False})
 
     niro_undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-2,
+        weight=-10,
         params={
             "sensor_cfg": SceneEntityCfg("niro_contact"),
             "threshold": 0,
@@ -817,13 +990,14 @@ class RewardsCfg:
 
     niro_contact_force = RewTerm(
         func=mdp.contact_forces,
-        weight=-1e-4,
+        weight=-0.1,
         params={
             "sensor_cfg": SceneEntityCfg("niro_contact"),
             "threshold": 0,
         },
     )
 
+    niro_vel_acc = RewTerm(func=niro_reward, weight=1)
 
 def pin_correct(env, right: bool = True) -> torch.Tensor:
     hole_pos_w = all_hole_positions(env, right)
@@ -879,7 +1053,9 @@ class TerminationsCfg:
     draw_lines = DoneTerm(func=draw_lines)
 
 
-def modify_correct_distance(env: ManagerBasedRLEnv, env_ids: Sequence[int], distance: float, num_steps: int):
+def modify_correct_distance(
+    env: ManagerBasedRLEnv, env_ids: Sequence[int], distance: float, num_steps: int
+):
     if env.common_step_counter > num_steps:
         global CORRECT_DISTANCE
         CORRECT_DISTANCE = distance
