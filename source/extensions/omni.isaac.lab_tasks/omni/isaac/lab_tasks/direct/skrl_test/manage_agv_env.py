@@ -379,9 +379,8 @@ class niro_reward(TermBase, NiroRewBase):
         niro_vel_norm = niro_velocity_norm(env)
         niro_acc_norm = niro_acceleration_norm(env)
 
-        reward = niro_vel_norm + niro_acc_norm
-        return reward
-
+        reward = niro_vel_norm**2 + niro_acc_norm**2
+        return -reward
 
 class pin_pos_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
@@ -994,7 +993,7 @@ class RewardsCfg:
         },
     )
 
-    niro_vel_acc = RewTerm(func=niro_reward, weight=1)
+    niro_vel_acc = RewTerm(func=niro_reward, weight=0.1)
 
 
 def pin_correct(env, right: bool = True) -> torch.Tensor:
