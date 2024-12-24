@@ -65,6 +65,7 @@ class AGVSceneCfg(InteractiveSceneCfg):
         prim_path=f"{ENV_REGEX_NS}/Table",
         spawn=sim_utils.UsdFileCfg(
             usd_path="./robot/usd/table.usd",
+            mass_props=sim_utils.MassPropertiesCfg(mass=10000000.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False
             ),
@@ -280,45 +281,25 @@ def randomize_object_position(
     rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
 
-def randomize_arti_position(
+def reset_object_position(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
-    xy_position_range: tuple[float, float],
-    z_position_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("agv"),
+    position: tuple[float, float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("table"),
 ):
-    articulation = env.scene.articulations[asset_cfg.name]
-    # obtain default and deal with the offset for env origins
-    default_root_state = articulation.data.default_root_state[env_ids].clone()
+    rigid_object = env.scene.rigid_objects[asset_cfg.name]
+    default_root_state = rigid_object.data.default_root_state[env_ids].clone()
+    # default_root_state = torch.zeros_like(default_root_state)
     default_root_state[:, 0:3] += env.scene.env_origins[env_ids]
-
-    xy_low, xy_high = xy_position_range
-    z_low, z_high = z_position_range
-
-    # Random offsets for X and Y coordinates
-    xy_random_offsets = torch.tensor(
-        np.random.uniform(
-            xy_low, xy_high, size=(default_root_state.shape[0], 2)
-        ),  # For X and Y only
-        dtype=default_root_state.dtype,
-        device=default_root_state.device,
-    )
-
-    # Random offsets for Z coordinate
-    z_random_offsets = torch.tensor(
-        np.random.uniform(
-            z_low, z_high, size=(default_root_state.shape[0], 1)
-        ),  # For Z only
-        dtype=default_root_state.dtype,
-        device=default_root_state.device,
-    )
-
+    # position = torch.tensor(
+    #     position,
+    #     dtype=default_root_state.dtype,
+    #     device=default_root_state.device,
+    # )
     # Apply random offsets to the X, Y, and Z coordinates
-    default_root_state[:, 0:2] += xy_random_offsets  # Apply to X and Y coordinates
-    default_root_state[:, 2:3] += z_random_offsets  # Apply to Z coordinate
+    # default_root_state[:, 0:3] += position
 
-    # set into the physics simulatio
-    articulation.write_root_state_to_sim(default_root_state, env_ids=env_ids)
+    rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
 
 
 class PinRewBase:
@@ -326,7 +307,7 @@ class PinRewBase:
         pin_idx = self._env.scene.articulations["agv"].find_bodies(
             "rpin_1" if right else "lpin_1"
         )[0]
-        pin_root_pos = self._env.scene.articulations["agv"].data.body_pos_w[
+        pin_root_pos = self._env.scene.articulations["agv"].data.body_link_pos_w[
             env_ids, pin_idx, :
         ]
         pin_rel = torch.tensor(
@@ -348,7 +329,7 @@ class PinRewBase:
         pin_idx = self._env.scene.articulations["agv"].find_bodies(
             "rpin_1" if right else "lpin_1"
         )[0]
-        pin_vel_w = self._env.scene.articulations["agv"].data.body_vel_w[
+        pin_vel_w = self._env.scene.articulations["agv"].data.body_link_vel_w[
             env_ids, pin_idx, :
         ]
         pin_lv = pin_vel_w.squeeze(1)[..., :3]
@@ -359,26 +340,28 @@ class PinRewBase:
 class NiroRewBase:
     def niro_velocities(self, env_ids=None):
         niro = self._env.scene.rigid_objects["niro"]
-        niro_vel_w = niro.data.body_vel_w
-        print(niro_vel_w)
-        niro_lv = niro_vel_w.squeeze(1)[..., :3]
-        niro_vel_norm = torch.norm(niro_lv, dim=-1)
+        niro_vel_w = niro.data.body_com_vel_w
+        niro_lv = niro_vel_w.squeeze(1)  # [..., :3]
+        niro_vel_norm = torch.norm(niro_lv[..., :3], dim=-1) + torch.norm(
+            niro_lv[..., 3:], dim=-1
+        )
         return niro_vel_norm
 
     def niro_accelerations(self, env_ids=None):
         niro = self._env.scene.rigid_objects["niro"]
         niro_acc_w = niro.data.body_acc_w
-        print(niro_acc_w)
-        niro_lv = niro_acc_w.squeeze(1)[..., :3]
-        niro_acc_norm = torch.norm(niro_lv, dim=-1)
+        niro_la = niro_acc_w.squeeze(1)  # [..., :3]
+        niro_acc_norm = torch.norm(niro_la[..., :3], dim=-1) + torch.norm(
+            niro_la[..., 3:], dim=-1
+        )
         return niro_acc_norm
 
 
 class niro_reward(TermBase, NiroRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
         super().__init__(cfg, env)
-        self.init_niro_vel = all_niro_velocities(env)
-        self.init_niro_acc = all_niro_accelerations(env)
+        self.init_niro_vel = niro_velocity_norm(env)
+        self.init_niro_acc = niro_acceleration_norm(env)
 
     def reset(self, env_ids: torch.Tensor):
         niro_vel_w = self.niro_velocities(env_ids)
@@ -393,10 +376,10 @@ class niro_reward(TermBase, NiroRewBase):
         right: bool = True,
         asset_cfg: SceneEntityCfg = SceneEntityCfg("niro"),
     ) -> torch.Tensor:
-        niro_vel_w = all_niro_velocities(env)
-        niro_acc_w = all_niro_accelerations(env)
+        niro_vel_norm = niro_velocity_norm(env)
+        niro_acc_norm = niro_acceleration_norm(env)
 
-        reward = niro_vel_w**2 + niro_acc_w**2
+        reward = niro_vel_norm + niro_acc_norm
         return reward
 
 
@@ -756,14 +739,21 @@ class EventCfg:
         },
     )
 
-    # reset_table_position
+    # reset_table_position = EventTerm(
+    #     func=reset_object_position,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("table"),
+    #         "position": (0, -0.7, 1),
+    #     },
+    # )
 
 
 def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
     pin_idx = env.scene.articulations["agv"].find_bodies(
         "rpin_1" if right else "lpin_1"
     )[0]
-    pin_root_pos = env.scene.articulations["agv"].data.body_pos_w[:, pin_idx, :]
+    pin_root_pos = env.scene.articulations["agv"].data.body_link_pos_w[:, pin_idx, :]
     pin_rel = torch.tensor(
         [0, 0.02 if right else -0.02, 0.45], device="cuda:0"
     )  # 0.479
@@ -794,16 +784,23 @@ def all_hole_positions(env: ManagerBasedRLEnv, right: bool = True):
     return hole_pos_w.squeeze(1)
 
 
-def all_niro_velocities(env: ManagerBasedRLEnv):
+def niro_velocity_norm(env: ManagerBasedRLEnv):
     niro: RigidObject = env.scene.rigid_objects["niro"]
-    niro_vel_w = niro.data.body_vel_w
-    return niro_vel_w.squeeze(1)
+    niro_lv = niro.data.body_com_vel_w.squeeze(1)
+    niro_vel_norm = torch.norm(niro_lv[..., :3], dim=-1) + torch.norm(
+        niro_lv[..., 3:], dim=-1
+    )
+
+    return niro_vel_norm
 
 
-def all_niro_accelerations(env: ManagerBasedRLEnv):
+def niro_acceleration_norm(env: ManagerBasedRLEnv):
     niro: RigidObject = env.scene.rigid_objects["niro"]
-    niro_acc_w = niro.data.body_acc_w
-    return niro_acc_w.squeeze(1)
+    niro_la = niro.data.body_acc_w.squeeze(1)
+    niro_acc_norm = torch.norm(niro_la[..., :3], dim=-1) + torch.norm(
+        niro_la[..., 3:], dim=-1
+    )
+    return niro_acc_norm
 
 
 def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
@@ -811,7 +808,7 @@ def all_pin_velocities(env: ManagerBasedRLEnv, right: bool = True, env_id=None):
         "rpin_1" if right else "lpin_1"
     )[0]
     # pin_idx = env.scene.articulations["agv"].find_joints(AGV_JOINT.RR_RPIN_PRI if right else AGV_JOINT.LR_LPIN_PRI)[0]
-    pin_vel_w = env.scene.articulations["agv"].data.body_vel_w[:, pin_idx, :]
+    pin_vel_w = env.scene.articulations["agv"].data.body_link_vel_w[:, pin_idx, :]
 
     pin_lv = pin_vel_w.squeeze(1)[..., :3]
     pin_v_norm = torch.norm(pin_lv, dim=-1)
@@ -998,6 +995,7 @@ class RewardsCfg:
     )
 
     niro_vel_acc = RewTerm(func=niro_reward, weight=1)
+
 
 def pin_correct(env, right: bool = True) -> torch.Tensor:
     hole_pos_w = all_hole_positions(env, right)
