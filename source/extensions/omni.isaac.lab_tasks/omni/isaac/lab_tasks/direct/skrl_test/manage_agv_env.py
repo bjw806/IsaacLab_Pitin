@@ -284,22 +284,20 @@ def randomize_object_position(
 def reset_object_position(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
-    position: tuple[float, float, float],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("table"),
 ):
     rigid_object = env.scene.rigid_objects[asset_cfg.name]
-    default_root_state = rigid_object.data.default_root_state[env_ids].clone()
-    # default_root_state = torch.zeros_like(default_root_state)
-    default_root_state[:, 0:3] += env.scene.env_origins[env_ids]
-    # position = torch.tensor(
-    #     position,
-    #     dtype=default_root_state.dtype,
-    #     device=default_root_state.device,
-    # )
-    # Apply random offsets to the X, Y, and Z coordinates
-    # default_root_state[:, 0:3] += position
+    rigid_object.write_root_state_to_sim(table_state, env_ids=env_ids)
 
-    rigid_object.write_root_state_to_sim(default_root_state, env_ids=env_ids)
+
+def init_table(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("table"),
+):
+    global table_state
+    rigid_object = env.scene.rigid_objects[asset_cfg.name]
+    table_state = rigid_object.data.root_link_state_w.clone()
 
 
 class PinRewBase:
@@ -381,6 +379,7 @@ class niro_reward(TermBase, NiroRewBase):
 
         reward = niro_vel_norm**2 + niro_acc_norm**2
         return -reward
+
 
 class pin_pos_reward(TermBase, PinRewBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewTerm):
@@ -738,14 +737,15 @@ class EventCfg:
         },
     )
 
-    # reset_table_position = EventTerm(
-    #     func=reset_object_position,
-    #     mode="reset",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("table"),
-    #         "position": (0, -0.7, 1),
-    #     },
-    # )
+    reset_table_position = EventTerm(
+        func=reset_object_position,
+        mode="reset",
+    )
+
+    init_table = EventTerm(
+        func=init_table,
+        mode="startup",
+    )
 
 
 def all_pin_positions(env: ManagerBasedRLEnv, right: bool = True):
